@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="640" viewBox="0 0 360 640">
+  <rect width="360" height="640" fill="#EDEDED"/>
+  <!-- 状态栏 -->
+  <rect x="0" y="0" width="360" height="24" fill="#EDEDED"/>
+  <text x="12" y="16" font-family="sans-serif" font-size="11" fill="#333">9:41</text>
+  <text x="320" y="16" font-family="sans-serif" font-size="11" fill="#333">100%</text>
+  <!-- 导航栏 -->
+  <rect x="0" y="24" width="360" height="44" fill="#F7F7F7"/>
+  <text x="12" y="50" font-family="sans-serif" font-size="16" fill="#333">&lt;</text>
+  <text x="180" y="50" font-family="sans-serif" font-size="15" fill="#333" text-anchor="middle" font-weight="500">匿名客户123</text>
+  <!-- 聊天区域 -->
+  <!-- 对方消息 1 -->
+  <rect x="12" y="80" width="200" height="36" rx="6" fill="#FFFFFF"/>
+  <text x="22" y="102" font-family="sans-serif" font-size="13" fill="#333">你好，想咨询写真套餐</text>
+  <!-- 对方消息 2 -->
+  <rect x="12" y="124" width="160" height="36" rx="6" fill="#FFFFFF"/>
+  <text x="22" y="146" font-family="sans-serif" font-size="13" fill="#333">预算3000左右</text>
+  <!-- 我的消息 1 -->
+  <rect x="200" y="168" width="148" height="36" rx="6" fill="#95EC69"/>
+  <text x="210" y="190" font-family="sans-serif" font-size="13" fill="#333">您好！欢迎咨询</text>
+  <!-- 对方消息 3 -->
+  <rect x="12" y="212" width="180" height="36" rx="6" fill="#FFFFFF"/>
+  <text x="22" y="234" font-family="sans-serif" font-size="13" fill="#333">8月15日有空吗</text>
+  <!-- 对方消息 4 -->
+  <rect x="12" y="256" width="160" height="36" rx="6" fill="#FFFFFF"/>
+  <text x="22" y="278" font-family="sans-serif" font-size="13" fill="#333">在哪家店拍呢</text>
+  <!-- 我的消息 2 -->
+  <rect x="160" y="300" width="188" height="36" rx="6" fill="#95EC69"/>
+  <text x="170" y="322" font-family="sans-serif" font-size="13" fill="#333">8月15日可以的，1号棚</text>
+  <!-- 对方消息 5 -->
+  <rect x="12" y="344" width="200" height="36" rx="6" fill="#FFFFFF"/>
+  <text x="22" y="366" font-family="sans-serif" font-size="13" fill="#333">联系电话 138****5678</text>
+  <!-- 时间戳 -->
+  <text x="180" y="400" font-family="sans-serif" font-size="10" fill="#999" text-anchor="middle">今天 14:30</text>
+  <!-- 演示水印 -->
+  <text x="180" y="620" font-family="sans-serif" font-size="10" fill="#BBB" text-anchor="middle">匿名合成演示数据 · 非真实客户</text>
+</svg>
