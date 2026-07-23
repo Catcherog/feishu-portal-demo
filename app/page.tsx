@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect } from 'react';
 import { usePortalStore } from '@/lib/store';
 import { getApiBaseUrl } from '@/lib/api-client';
 import { UploadZone } from '@/components/UploadZone';
@@ -9,6 +9,7 @@ import { ProcessingStatus } from '@/components/ProcessingStatus';
 import { EvidenceViewer } from '@/components/EvidenceViewer';
 import { CorrectionForm } from '@/components/CorrectionForm';
 import { ResultPanel } from '@/components/ResultPanel';
+import { DemoDisclosureBanner } from '@/components/DemoDisclosureBanner';
 import type { ScreenshotItem } from '@/lib/types';
 
 export default function HomePage() {
@@ -108,68 +109,6 @@ export default function HomePage() {
         />
       )}
     </main>
-  );
-}
-
-/** 顶部 Disclosure 横幅：显著标记当前 Demo / Mock / Dry-run 状态 */
-function DemoDisclosureBanner({
-  apiMode,
-  dryRun,
-}: {
-  apiMode: 'mock' | 'real';
-  dryRun: boolean;
-}) {
-  const isMock = apiMode === 'mock';
-  const isLive = !isMock && !dryRun;
-
-  const theme = isLive
-    ? { bg: 'bg-emerald-50', border: 'border-emerald-200', title: 'text-emerald-900', badge: 'bg-emerald-600' }
-    : isMock
-      ? { bg: 'bg-amber-50', border: 'border-amber-300', title: 'text-amber-900', badge: 'bg-amber-500' }
-      : { bg: 'bg-blue-50', border: 'border-blue-300', title: 'text-blue-900', badge: 'bg-blue-600' };
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={`mb-4 rounded-lg border ${theme.border} ${theme.bg} px-3 sm:px-4 py-2.5 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs sm:text-sm`}
-    >
-      <span className={`font-bold ${theme.title}`}>
-        {isLive ? 'Live Mode' : isMock ? 'Demo Mode' : 'Real API Mode'}
-      </span>
-      <span aria-hidden className="text-gray-300">|</span>
-      {isMock ? (
-        <>
-          <Pill className={theme.badge}>Mock OCR</Pill>
-          <Pill className={theme.badge}>Mock Collator</Pill>
-          <span className="text-gray-600">本地 mock，不调用 collator</span>
-        </>
-      ) : (
-        <>
-          <Pill className={theme.badge}>Real OCR</Pill>
-          <span className="text-gray-600 hidden sm:inline">→ {getApiBaseUrl()}</span>
-        </>
-      )}
-      <span aria-hidden className="text-gray-300">|</span>
-      {dryRun ? (
-        <>
-          <Pill className={theme.badge}>Dry-run Feishu Writer</Pill>
-          <span className="text-gray-600">不会实际写入飞书业务表</span>
-        </>
-      ) : (
-        <Pill className={isLive ? theme.badge : 'bg-rose-500'}>Live Feishu Writer</Pill>
-      )}
-    </div>
-  );
-}
-
-function Pill({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold text-white ${className ?? 'bg-gray-500'}`}
-    >
-      {children}
-    </span>
   );
 }
 

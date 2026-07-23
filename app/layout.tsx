@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "智能录入台 Portal",
+  title: "飞书智能录入台",
   description: "飞书智能业务数据中台 — 截图智能录入台",
 };
 
