@@ -53,15 +53,15 @@ export function DemoDisclosureBanner({ apiMode, dryRun }: Props) {
         </>
       )}
       <span aria-hidden className="text-gray-300">|</span>
-      {dryRun ? (
+      {isMock ? (
+        <span className="text-gray-600">不写入生产飞书</span>
+      ) : dryRun ? (
         <>
           <Pill className={theme.badge}>dry-run 模式</Pill>
           <span className="text-gray-600">不写入生产飞书</span>
         </>
-      ) : isLive ? (
-        <Pill className={theme.badge}>写入生产飞书</Pill>
       ) : (
-        <Pill className="bg-rose-500">将写入生产飞书</Pill>
+        <Pill className={theme.badge}>写入生产飞书</Pill>
       )}
     </div>
   );
