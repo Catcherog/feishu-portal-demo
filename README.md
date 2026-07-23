@@ -4,6 +4,31 @@
 
 将聊天截图上传后，通过 OCR → 候选字段提取 → 治理规则校验 → 飞书业务表写入的完整流水线，将非结构化对话转化为结构化业务数据。
 
+## 系统架构关系
+
+本 Portal 是飞书智能业务数据中台（FEISHU-AI-MIDDLE-PLATFORM）的前端入口，与后端三个组件协作：
+
+```
+用户浏览器
+  ↓ 上传截图
+Portal (本项目, Next.js :3000)
+  ↓ HTTP 调用 Screenshot API V1
+Collator (数据摄入入口, Fastify :8787)
+  ↓ PRE_WRITE 治理请求
+SOP (统一治理门禁, Node.js :3001)
+  ↓ BR-01~BR-06 规则校验
+  ↓ 返回 Governance Result V1
+Collator 执行 dry-run 写入
+  ↓ （dry-run 模式不写入生产飞书）
+飞书多维表格（权威业务数据库，本 demo 不接触）
+```
+
+**四者职责**：
+- **Portal**：前端 UI，上传截图 → 展示候选字段 → 人工修正 → 展示治理结果。不含业务规则。
+- **Collator**：数据摄入入口，负责 OCR → Candidate 提取 → PRE_WRITE 治理 → 写入。本 demo 默认 dry-run。
+- **SOP**：统一治理门禁，执行 BR-01~BR-06 业务规则校验（客片必关联客户、样片必关联模特、类型缺失不猜测等），返回 PASS/NEEDS_REVIEW/BLOCKED。
+- **飞书多维表格**：权威业务数据库，日常操作界面。本 demo 不写入生产飞书。
+
 ## 技术栈
 
 - **Next.js 16** (App Router)
