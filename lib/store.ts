@@ -19,7 +19,7 @@ import type {
   ConfirmWriteRequest,
   EscalateReviewRequest,
 } from './types';
-import { getApiClient, ScreenshotApiError } from './api-client';
+import { getApiClient, ScreenshotApiError, getApiMode } from './api-client';
 
 /** 生成前端临时 ID */
 function genLocalId(): string {
@@ -91,7 +91,9 @@ interface PortalState {
 
 export const usePortalStore = create<PortalState>((set, get) => ({
   screenshots: [],
-  apiMode: 'mock',
+  // AC-A03：apiMode 由 NEXT_PUBLIC_DEMO_MODE 环境变量决定默认值
+  // 生产构建缺失环境变量时 getApiMode() 会直接抛错
+  apiMode: getApiMode(),
   selectedLocalId: null,
   globalLoading: false,
 
@@ -379,14 +381,14 @@ function mapStatusToStage(status: import('./types').ScreenshotStatus): Processin
     case 'governance_passed':
       return 'governance';
     case 'governance_needs_review':
-    case 'governance_blocked':
       return 'governance';
+    // governance_blocked 是终态（AC-A04），映射到 done 以停止轮询
+    case 'governance_blocked':
     case 'write_succeeded':
     case 'write_failed':
     case 'duplicate_skipped':
     case 'review_pending':
     case 'review_resolved':
-      return 'done';
     case 'expired':
       return 'done';
     default:

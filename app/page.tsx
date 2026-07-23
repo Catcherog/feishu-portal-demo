@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { usePortalStore } from '@/lib/store';
-import { getApiBaseUrl } from '@/lib/api-client';
+import { getApiBaseUrl, isTerminalStatus } from '@/lib/api-client';
 import { UploadZone } from '@/components/UploadZone';
 import { ScreenshotList } from '@/components/ScreenshotList';
 import { ProcessingStatus } from '@/components/ProcessingStatus';
@@ -31,14 +31,29 @@ export default function HomePage() {
   const [dryRun, setDryRun] = useState(false);
 
   // 自动轮询：当选中项有 screenshotId 且未到 done 阶段时
+  // AC-A04：最大轮询次数 60（60 × 2s = 2 分钟），终态自动终止
   useEffect(() => {
     if (!selectedItem?.screenshotId) return;
     if (selectedItem.stage === 'done') return;
+    // 已到达终态则不再轮询（双重保障，防止 mapStatusToStage 遗漏）
+    if (selectedItem.serverStatus && isTerminalStatus(selectedItem.serverStatus)) return;
+
+    let attempts = 0;
+    const MAX_POLL_ATTEMPTS = 60;
     const timer = setInterval(() => {
+      attempts += 1;
+      if (attempts > MAX_POLL_ATTEMPTS) {
+        console.warn(
+          `[Portal] 轮询达到最大次数 (${MAX_POLL_ATTEMPTS})，停止轮询。` +
+            '可点击「刷新状态」手动重试。',
+        );
+        clearInterval(timer);
+        return;
+      }
       pollStatus(selectedItem.localId);
     }, 2000);
     return () => clearInterval(timer);
-  }, [selectedItem?.screenshotId, selectedItem?.stage, selectedItem?.localId, pollStatus]);
+  }, [selectedItem?.screenshotId, selectedItem?.stage, selectedItem?.localId, selectedItem?.serverStatus, pollStatus]);
 
   return (
     <main className="flex-1 w-full max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-6">
