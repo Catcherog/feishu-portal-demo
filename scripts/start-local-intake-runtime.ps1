@@ -16,7 +16,9 @@
 
 param(
   [string]$SopDir = "..\SOP",
-  [string]$CollatorDir = "..\collator",
+  # FAMP-INTERNAL-CONTROLLED-WRITE-01: 切换到 internal-controlled 分支
+  # 该分支支持 FEISHU_WRITE_ENV=internal-controlled 模式（3 步 preview/confirm/execute 流程）
+  [string]$CollatorDir = "..\collator-internal-write-r1",
   [string]$LogDir = "$env:TEMP\famp-local-runtime"
 )
 
@@ -112,10 +114,13 @@ try {
   }
 
   # 6. 启动 Collator
-  Write-Host "`n[6/7] 启动 Collator..."
+  Write-Host "`n[6/7] 启动 Collator (internal-controlled)..."
   # 设置环境变量：绑定 loopback，配置 CORS allowlist
   $env:COLLATOR_HOST = "127.0.0.1"
   $env:COLLATOR_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000,https://portal-seven-jade-47.vercel.app"
+  # FAMP-INTERNAL-CONTROLLED-WRITE-01: operator JWT 认证
+  # Portal 前端通过 NEXT_PUBLIC_PORTAL_OPERATOR_JWT 环境变量持有预生成的 HS256 JWT
+  # Collator 端通过 PRODUCTION_PILOT_JWT_SECRET 验证（已在 .env 中配置）
 
   # 优先使用 dev 模式（tsx），回退到 build 后的 dist
   $collatorProc = Start-Process -FilePath "npx" -ArgumentList "tsx", "src/server/app.ts" `

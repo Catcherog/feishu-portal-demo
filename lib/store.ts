@@ -19,7 +19,7 @@ import type {
   ConfirmWriteRequest,
   EscalateReviewRequest,
 } from './types';
-import { getApiClient, ScreenshotApiError, getApiMode } from './api-client';
+import { getApiClient, ScreenshotApiError, getApiMode, isInternalControlledReady, isControlledWriteEnvironment } from './api-client';
 
 /** 生成前端临时 ID */
 function genLocalId(): string {
@@ -81,11 +81,11 @@ interface PortalState {
   submitCorrections: (localId: string) => Promise<void>;
   /** 确认写入（legacy，保留向后兼容） */
   confirmWrite: (localId: string, dryRun?: boolean) => Promise<void>;
-  /** 生成写入 Preview（FAMP-PORTAL-VERCEL-LOCAL-RUNTIME-01 §7: Confirm/Execute 分离） */
-  generatePreview: (localId: string) => void;
-  /** 确认 Preview（UI 状态变更，不调用 API） */
-  confirmPreview: (localId: string) => void;
-  /** 执行真实写入（仅在 Preview 确认后可调用，调用 confirm API） */
+  /** 生成写入 Preview（FAMP-INTERNAL-CONTROLLED-WRITE-01: controlled 模式下调用 createInternalPreview API） */
+  generatePreview: (localId: string) => Promise<void>;
+  /** 确认 Preview（controlled 模式下调用 confirmInternalPreview API） */
+  confirmPreview: (localId: string) => Promise<void>;
+  /** 执行真实写入（controlled 模式下调用 executeInternalWrite API；legacy 模式调用 confirmWrite） */
   executeWrite: (localId: string, dryRun?: boolean) => Promise<void>;
   /** 转人工复核 */
   escalateReview: (localId: string, reasonCode: string, reason: string) => Promise<void>;
@@ -135,6 +135,9 @@ export const usePortalStore = create<PortalState>((set, get) => ({
         submitting: false,
         previewConfirmed: false,
         executing: false,
+        // FAMP-INTERNAL-CONTROLLED-WRITE-01: internal-controlled 流程状态
+        internalPreview: undefined,
+        internalWriteResult: undefined,
       });
     }
     if (items.length === 0) return;
@@ -326,17 +329,85 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     }
   },
 
-  // FAMP-PORTAL-VERCEL-LOCAL-RUNTIME-01 §7: Confirm/Execute 分离
-  generatePreview: (localId) => {
+  // FAMP-INTERNAL-CONTROLLED-WRITE-01: 在 controlled 模式下走 3 步 internal-controlled 流程
+  // 步骤 1: generatePreview → 调用 createInternalPreview API，获取 preview_id + nonce
+  // 步骤 2: confirmPreview → 调用 confirmInternalPreview API，锁定 preview
+  // 步骤 3: executeWrite → 调用 executeInternalWrite API，执行真实写入
+  generatePreview: async (localId) => {
+    const state = get();
+    const item = state.screenshots.find((it) => it.localId === localId);
+    if (!item || !item.screenshotId) return;
+    if (item.submitting) return;
     get().updateScreenshot(localId, {
       stage: 'preview',
       previewConfirmed: false,
       error: undefined,
+      submitting: true,
     });
+    try {
+      // 受控写入环境 + JWT 已配置 → 走 internal-controlled 3 步流程
+      if (isControlledWriteEnvironment() && isInternalControlledReady()) {
+        const client = getApiClient(state.apiMode);
+        const candidateId = item.evidenceResponse?.candidate_v1.candidate_id ?? '';
+        if (!candidateId) {
+          throw new ScreenshotApiError('CANDIDATE_MISSING', '候选 ID 缺失，无法生成 preview');
+        }
+        const preview = await client.createInternalPreview({
+          screenshot_id: item.screenshotId,
+          candidate_v1_id: candidateId,
+        });
+        get().updateScreenshot(localId, {
+          submitting: false,
+          internalPreview: preview,
+          // preview 状态为 preview_generated，等待用户确认
+          previewConfirmed: false,
+        });
+      } else {
+        // 非 controlled 模式或 JWT 未配置 → 仅切换 UI 状态（兼容旧 test 模式）
+        get().updateScreenshot(localId, { submitting: false });
+      }
+    } catch (err) {
+      const message = err instanceof ScreenshotApiError ? err.message : String(err);
+      get().updateScreenshot(localId, {
+        submitting: false,
+        error: `生成预览失败: ${message}`,
+      });
+    }
   },
 
-  confirmPreview: (localId) => {
-    get().updateScreenshot(localId, { previewConfirmed: true });
+  confirmPreview: async (localId) => {
+    const state = get();
+    const item = state.screenshots.find((it) => it.localId === localId);
+    if (!item || !item.screenshotId) return;
+    if (item.submitting) return;
+    // 已确认则幂等返回
+    if (item.previewConfirmed) return;
+
+    // 受控写入环境 + 有 internal preview → 调用 confirm API
+    if (isControlledWriteEnvironment() && isInternalControlledReady() && item.internalPreview) {
+      get().updateScreenshot(localId, { submitting: true, error: undefined });
+      try {
+        const client = getApiClient(state.apiMode);
+        const confirmed = await client.confirmInternalPreview(item.internalPreview.preview_id, {
+          nonce: item.internalPreview.nonce,
+          candidate_v1_id: item.internalPreview.candidate_id,
+        });
+        get().updateScreenshot(localId, {
+          submitting: false,
+          internalPreview: confirmed,
+          previewConfirmed: true,
+        });
+      } catch (err) {
+        const message = err instanceof ScreenshotApiError ? err.message : String(err);
+        get().updateScreenshot(localId, {
+          submitting: false,
+          error: `确认预览失败: ${message}`,
+        });
+      }
+    } else {
+      // 非 controlled 模式 → 仅切换 UI 状态（兼容旧 test 模式）
+      get().updateScreenshot(localId, { previewConfirmed: true });
+    }
   },
 
   executeWrite: async (localId, dryRun = false) => {
@@ -347,21 +418,41 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     if (item.submitting || item.executing) return; // 防重复
     get().updateScreenshot(localId, { executing: true, error: undefined, stage: 'write' });
     try {
-      const client = getApiClient(state.apiMode);
-      const req: ConfirmWriteRequest = {
-        reviewer_id: DEFAULT_REVIEWER_ID,
-        candidate_v1_id: item.evidenceResponse?.candidate_v1.candidate_id ?? '',
-        dry_run: dryRun,
-      };
-      const resp = await client.confirmWrite(item.screenshotId, req);
-      get().updateScreenshot(localId, {
-        executing: false,
-        submitting: false,
-        confirmResponse: resp,
-        serverStatus: resp.status,
-        stage: resp.status === 'write_succeeded' ? 'done' : 'write',
-      });
-      await get().loadFinalResult(localId);
+      // 受控写入环境 + JWT 已配置 + 有 internal preview → 走 execute API
+      if (isControlledWriteEnvironment() && isInternalControlledReady() && item.internalPreview) {
+        const client = getApiClient(state.apiMode);
+        const result = await client.executeInternalWrite(item.internalPreview.preview_id, {
+          nonce: item.internalPreview.nonce,
+          candidate_v1_id: item.internalPreview.candidate_id,
+        });
+        const isSuccess = result.status === 'succeeded';
+        get().updateScreenshot(localId, {
+          executing: false,
+          submitting: false,
+          internalWriteResult: result,
+          serverStatus: isSuccess ? 'write_succeeded' : 'write_failed',
+          stage: isSuccess ? 'done' : 'write',
+        });
+        // 加载最终结果以获取 write_logs 和 transaction_snapshot
+        await get().loadFinalResult(localId);
+      } else {
+        // 非 controlled 模式 → 走旧 confirmWrite 流程（兼容 test 模式）
+        const client = getApiClient(state.apiMode);
+        const req: ConfirmWriteRequest = {
+          reviewer_id: DEFAULT_REVIEWER_ID,
+          candidate_v1_id: item.evidenceResponse?.candidate_v1.candidate_id ?? '',
+          dry_run: dryRun,
+        };
+        const resp = await client.confirmWrite(item.screenshotId, req);
+        get().updateScreenshot(localId, {
+          executing: false,
+          submitting: false,
+          confirmResponse: resp,
+          serverStatus: resp.status,
+          stage: resp.status === 'write_succeeded' ? 'done' : 'write',
+        });
+        await get().loadFinalResult(localId);
+      }
     } catch (err) {
       const message = err instanceof ScreenshotApiError ? err.message : String(err);
       get().updateScreenshot(localId, {

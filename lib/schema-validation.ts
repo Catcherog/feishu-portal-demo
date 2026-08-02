@@ -441,6 +441,61 @@ export const getFinalResultResponseSchema = z
   .loose();
 
 // ============================================================================
+// 8. POST /v1/internal-controlled-writes/* — Internal-controlled 3 步流程
+// ============================================================================
+
+const writeTableSchema = z.enum(['customer', 'project', 'model']);
+
+export const internalControlledWriteResultSchema = z
+  .object({
+    status: z.string(),
+    write_results: z.array(
+      z
+        .object({
+          entity_type: writeTableSchema,
+          target_table_id: z.string(),
+          business_record_id: z.union([z.string(), z.null()]).optional(),
+          created: z.boolean(),
+          status: z.string(),
+          error_code: z.string().optional(),
+          write_log_id: z.string().optional(),
+        })
+        .loose(),
+    ),
+    transaction_snapshot_id: z.string().optional(),
+    error_code: z.string().optional(),
+    additional_create_calls: z.number(),
+    completed_at: z.string().optional(),
+    reconciliation: z.string().optional(),
+  })
+  .loose();
+
+export const internalWritePreviewSchema = z
+  .object({
+    preview_id: z.string(),
+    nonce: z.string(),
+    ingestion_id: z.string(),
+    candidate_id: z.string(),
+    candidate_digest: z.string(),
+    governance_digest: z.string(),
+    authoritative_plan_digest: z.string(),
+    operator: z.string(),
+    target_tables: z.array(writeTableSchema),
+    target_table_digests: z.record(z.string(), z.string()).optional(),
+    base_token_digest: z.string().optional(),
+    created_at: z.string(),
+    expires_at: z.string(),
+    // 放宽为 string：容忍后端未来扩展的状态值
+    status: z.string(),
+    confirmed_by: z.string().optional(),
+    confirmed_at: z.string().optional(),
+    executed_by: z.string().optional(),
+    executed_at: z.string().optional(),
+    result: internalControlledWriteResultSchema.optional(),
+  })
+  .loose();
+
+// ============================================================================
 // 统一导出
 // ============================================================================
 
@@ -452,4 +507,6 @@ export const responseSchemas = {
   confirmWrite: confirmWriteResponseSchema,
   escalateReview: escalateReviewResponseSchema,
   getFinalResult: getFinalResultResponseSchema,
+  internalWritePreview: internalWritePreviewSchema,
+  internalControlledWriteResult: internalControlledWriteResultSchema,
 };

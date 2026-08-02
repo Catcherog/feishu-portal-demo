@@ -130,8 +130,8 @@ export default function HomePage() {
                 onSubmit={() => submitScreenshot(selectedItem.localId, dryRun)}
                 onPoll={() => pollStatus(selectedItem.localId)}
                 onLoadEvidence={() => loadEvidence(selectedItem.localId)}
-                onGeneratePreview={() => generatePreview(selectedItem.localId)}
-                onConfirmPreview={() => confirmPreview(selectedItem.localId)}
+                onGeneratePreview={() => { void generatePreview(selectedItem.localId); }}
+                onConfirmPreview={() => { void confirmPreview(selectedItem.localId); }}
                 onExecuteClick={() => setShowExecuteDialog(true)}
                 onShowEscalate={() => setShowEscalate(true)}
                 onReloadFinal={() => loadFinalResult(selectedItem.localId)}
@@ -227,8 +227,9 @@ function DetailPanel({
     item.screenshotId &&
     (item.stage === 'candidate' || item.stage === 'governance' || item.stage === 'preview' || item.stage === 'write' || item.stage === 'done' ||
       item.serverStatus === 'candidate_drafted' || item.serverStatus === 'ocr_completed' || item.serverStatus === 'governance_passed');
-  const canGeneratePreview = item.evidenceResponse && (item.stage === 'governance' || item.stage === 'candidate') && item.serverStatus !== 'governance_blocked';
-  const canConfirmPreview = item.stage === 'preview' && !item.previewConfirmed;
+  const canGeneratePreview = item.evidenceResponse && (item.stage === 'governance' || item.stage === 'candidate') && item.serverStatus !== 'governance_blocked' && !item.internalPreview;
+  // controlled 模式：需要 internalPreview 存在才能确认；legacy 模式：stage=preview 即可
+  const canConfirmPreview = item.stage === 'preview' && !item.previewConfirmed && (!isControlled || !!item.internalPreview);
   const canExecute = item.stage === 'preview' && item.previewConfirmed;
   const canEscalate = item.evidenceResponse && item.stage !== 'done';
   const isPartial = item.confirmResponse && item.serverStatus !== 'write_succeeded' && item.serverStatus !== 'duplicate_skipped';
@@ -349,20 +350,22 @@ function DetailPanel({
             {canGeneratePreview && (
               <button
                 type="button"
+                disabled={item.submitting}
                 onClick={onGeneratePreview}
-                className="px-4 py-2 rounded-md text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+                className="px-4 py-2 rounded-md text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 transition-colors"
               >
-                生成写入预览
+                {item.submitting ? '生成中...' : '生成写入预览'}
               </button>
             )}
             {/* 确认 Preview */}
             {canConfirmPreview && (
               <button
                 type="button"
+                disabled={item.submitting}
                 onClick={onConfirmPreview}
-                className="px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+                className="px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
               >
-                确认预览
+                {item.submitting ? '确认中...' : '确认预览'}
               </button>
             )}
             {/* 执行真实写入（AC-14: Confirm 不会自动触发 Execute） */}
@@ -388,6 +391,15 @@ function DetailPanel({
               </button>
             )}
           </div>
+          {/* internal-controlled preview 状态 */}
+          {item.internalPreview && (
+            <div className="text-[10px] text-gray-500 space-y-0.5">
+              <div>Preview ID: <span className="font-mono">{item.internalPreview.preview_id.slice(0, 8)}...</span></div>
+              <div>状态: <span className="font-mono">{item.internalPreview.status}</span></div>
+              <div>目标表: <span className="font-mono">{item.internalPreview.target_tables.join(', ')}</span></div>
+              <div>过期时间: <span className="font-mono">{new Date(item.internalPreview.expires_at).toLocaleString()}</span></div>
+            </div>
+          )}
           {/* AC-14 提示 */}
           {item.stage === 'preview' && !item.previewConfirmed && (
             <p className="text-[10px] text-gray-400">请先确认预览，然后才能执行写入。</p>

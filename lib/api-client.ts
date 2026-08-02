@@ -28,6 +28,10 @@ import type {
   GetFinalResultResponse,
   ApiErrorResponse,
   ScreenshotStatus,
+  InternalWritePreviewRequest,
+  InternalWriteConfirmationRequest,
+  InternalWritePreview,
+  InternalControlledWriteResult,
 } from './types';
 import * as mock from './api-mock';
 import { responseSchemas } from './schema-validation';
@@ -141,9 +145,12 @@ async function fetchJson<T>(
  * 用 zod schema 校验 real API 响应。
  * 校验失败时抛出 ScreenshotApiError('SCHEMA_VALIDATION_FAILED')，
  * 防止畸形数据进入 UI。
+ *
+ * 注意：使用 ZodTypeAny + as T 断言，因为 zod 的 .loose() 产生的索引签名
+ * 与 TypeScript interface 不直接兼容。
  */
 function validateOrThrow<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodTypeAny,
   data: unknown,
   label: string,
 ): T {
@@ -161,7 +168,41 @@ function validateOrThrow<T>(
       result.error.issues,
     );
   }
-  return result.data;
+  return result.data as T;
+}
+
+// ============================================================================
+// Operator JWT（FAMP-INTERNAL-CONTROLLED-WRITE-01）
+// ============================================================================
+
+/**
+ * 获取 Portal operator JWT（HS256）。
+ *
+ * 安全设计：
+ * - 浏览器端不存放飞书 Secret 或 PRODUCTION_PILOT_JWT_SECRET
+ * - 前端持有 NEXT_PUBLIC_PORTAL_OPERATOR_JWT（一个预生成的长期 JWT，由运维 out-of-band 生成）
+ * - Collator 端用 PRODUCTION_PILOT_JWT_SECRET 验证签名
+ *
+ * 返回 null 表示未配置（internal-controlled 流程将 fail closed）
+ */
+function getOperatorJwt(): string | null {
+  const raw = process.env.NEXT_PUBLIC_PORTAL_OPERATOR_JWT;
+  if (!raw || raw.trim().length === 0) return null;
+  return raw.trim();
+}
+
+/** 为 fetch 请求构造 internal-controlled 所需的 Authorization header */
+function withOperatorAuth(headers: Record<string, string> = {}): Record<string, string> {
+  const jwt = getOperatorJwt();
+  if (jwt) {
+    headers['Authorization'] = `Bearer ${jwt}`;
+  }
+  return headers;
+}
+
+/** internal-controlled 流程是否就绪（JWT 已配置） */
+export function isInternalControlledReady(): boolean {
+  return getOperatorJwt() !== null;
 }
 
 // ============================================================================
@@ -286,15 +327,16 @@ export async function pollScreenshotStatus(
       { method: 'GET', timeoutMs, signal },
     );
     // 校验响应结构
-    lastResp = validateOrThrow(
+    const validated = validateOrThrow<GetScreenshotStatusResponse>(
       responseSchemas.getScreenshotStatus,
       lastResp,
       'getScreenshotStatus (poll)',
     );
-    onStatus?.(lastResp, attempt);
+    lastResp = validated;
+    onStatus?.(validated, attempt);
 
-    if (isTerminalStatus(lastResp.status)) {
-      return lastResp;
+    if (isTerminalStatus(validated.status)) {
+      return validated;
     }
 
     if (attempt < maxAttempts) {
@@ -321,6 +363,10 @@ export interface ApiClient {
   confirmWrite(id: string, req: ConfirmWriteRequest): Promise<ConfirmWriteResponse>;
   escalateReview(id: string, req: EscalateReviewRequest): Promise<EscalateReviewResponse>;
   getFinalResult(id: string): Promise<GetFinalResultResponse>;
+  // FAMP-INTERNAL-CONTROLLED-WRITE-01: 3 步 internal-controlled 流程
+  createInternalPreview(req: InternalWritePreviewRequest): Promise<InternalWritePreview>;
+  confirmInternalPreview(previewId: string, req: InternalWriteConfirmationRequest): Promise<InternalWritePreview>;
+  executeInternalWrite(previewId: string, req: InternalWriteConfirmationRequest): Promise<InternalControlledWriteResult>;
 }
 
 /** Mock API Client */
@@ -332,6 +378,61 @@ export const mockApiClient: ApiClient = {
   confirmWrite: (id, req) => mock.mockConfirmWrite(id, req),
   escalateReview: (id, req) => mock.mockEscalateReview(id, req),
   getFinalResult: (id) => mock.mockGetFinalResult(id),
+  // Mock: internal-controlled 3 步流程返回模拟 preview
+  createInternalPreview: async (req) => ({
+    preview_id: `mock_preview_${Date.now()}`,
+    nonce: `mock_nonce_${Math.random().toString(36).slice(2)}`,
+    ingestion_id: req.screenshot_id,
+    candidate_id: req.candidate_v1_id,
+    candidate_digest: 'mock_candidate_digest',
+    governance_digest: 'mock_governance_digest',
+    authoritative_plan_digest: 'mock_plan_digest',
+    operator: 'mock-operator',
+    target_tables: ['customer', 'project'],
+    target_table_digests: {},
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 900000).toISOString(),
+    status: 'preview_generated',
+  }),
+  confirmInternalPreview: async (previewId, req) => ({
+    preview_id: previewId,
+    nonce: req.nonce,
+    ingestion_id: 'mock_ingestion',
+    candidate_id: req.candidate_v1_id,
+    candidate_digest: 'mock_candidate_digest',
+    governance_digest: 'mock_governance_digest',
+    authoritative_plan_digest: 'mock_plan_digest',
+    operator: 'mock-operator',
+    target_tables: ['customer', 'project'],
+    target_table_digests: {},
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 900000).toISOString(),
+    status: 'confirmed',
+    confirmed_by: 'mock-operator',
+    confirmed_at: new Date().toISOString(),
+  }),
+  executeInternalWrite: async (previewId, req) => ({
+    status: 'succeeded',
+    write_results: [
+      {
+        entity_type: 'customer',
+        target_table_id: 'tblMockCustomer',
+        business_record_id: 'mock_rec_001',
+        created: true,
+        status: 'succeeded',
+      },
+      {
+        entity_type: 'project',
+        target_table_id: 'tblMockProject',
+        business_record_id: 'mock_rec_002',
+        created: true,
+        status: 'succeeded',
+      },
+    ],
+    transaction_snapshot_id: 'mock_snapshot_001',
+    additional_create_calls: 0,
+    completed_at: new Date().toISOString(),
+  }),
 };
 
 /**
@@ -391,6 +492,63 @@ export const realApiClient: ApiClient = {
       { method: 'GET' },
     );
     return validateOrThrow(responseSchemas.getFinalResult, data, 'getFinalResult');
+  },
+  // FAMP-INTERNAL-CONTROLLED-WRITE-01: 3 步 internal-controlled 流程
+  // 每步都需要 Authorization: Bearer <JWT> header
+  createInternalPreview: async (req) => {
+    if (!isInternalControlledReady()) {
+      throw new ScreenshotApiError(
+        'INTERNAL_CONTROLLED_NOT_CONFIGURED',
+        'internal-controlled 流程未配置：NEXT_PUBLIC_PORTAL_OPERATOR_JWT 环境变量缺失',
+      );
+    }
+    const data = await fetchJson<unknown>(
+      '/v1/internal-controlled-writes/previews',
+      {
+        method: 'POST',
+        body: JSON.stringify(req),
+        headers: withOperatorAuth(),
+        // preview 生成涉及治理调用，可能较慢
+        timeoutMs: 60000,
+      },
+    );
+    return validateOrThrow<InternalWritePreview>(responseSchemas.internalWritePreview, data, 'createInternalPreview');
+  },
+  confirmInternalPreview: async (previewId, req) => {
+    if (!isInternalControlledReady()) {
+      throw new ScreenshotApiError(
+        'INTERNAL_CONTROLLED_NOT_CONFIGURED',
+        'internal-controlled 流程未配置：NEXT_PUBLIC_PORTAL_OPERATOR_JWT 环境变量缺失',
+      );
+    }
+    const data = await fetchJson<unknown>(
+      `/v1/internal-controlled-writes/previews/${encodeURIComponent(previewId)}/confirm`,
+      {
+        method: 'POST',
+        body: JSON.stringify(req),
+        headers: withOperatorAuth(),
+      },
+    );
+    return validateOrThrow<InternalWritePreview>(responseSchemas.internalWritePreview, data, 'confirmInternalPreview');
+  },
+  executeInternalWrite: async (previewId, req) => {
+    if (!isInternalControlledReady()) {
+      throw new ScreenshotApiError(
+        'INTERNAL_CONTROLLED_NOT_CONFIGURED',
+        'internal-controlled 流程未配置：NEXT_PUBLIC_PORTAL_OPERATOR_JWT 环境变量缺失',
+      );
+    }
+    const data = await fetchJson<unknown>(
+      `/v1/internal-controlled-writes/previews/${encodeURIComponent(previewId)}/execute`,
+      {
+        method: 'POST',
+        body: JSON.stringify(req),
+        headers: withOperatorAuth(),
+        // 执行真实写入可能较慢（飞书 API 调用 + 事务）
+        timeoutMs: 120000,
+      },
+    );
+    return validateOrThrow<InternalControlledWriteResult>(responseSchemas.internalControlledWriteResult, data, 'executeInternalWrite');
   },
 };
 

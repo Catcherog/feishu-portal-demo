@@ -349,6 +349,85 @@ export interface GetFinalResultResponse {
 }
 
 // ============================================================================
+// 8. POST /v1/internal-controlled-writes/previews — Internal-controlled 3 步流程
+// ============================================================================
+// FAMP-INTERNAL-CONTROLLED-WRITE-01: internal-controlled 写入模式
+// 3 步流程（每步都需 Authorization: Bearer <JWT>）：
+//   8a. POST /v1/internal-controlled-writes/previews           — 生成 preview
+//   8b. POST /v1/internal-controlled-writes/previews/:id/confirm — 确认 preview
+//   8c. POST /v1/internal-controlled-writes/previews/:id/execute — 执行写入
+
+export interface InternalWritePreviewRequest {
+  screenshot_id: string;
+  candidate_v1_id: string;
+}
+
+export interface InternalWriteConfirmationRequest {
+  nonce: string;
+  candidate_v1_id: string;
+}
+
+/** internal-controlled preview 状态 */
+export type InternalWriteStatus =
+  | 'not_started'
+  | 'preview_generated'
+  | 'confirmed'
+  | 'executing'
+  | 'verifying'
+  | 'succeeded'
+  | 'failed'
+  | 'result_unknown'
+  | 'needs_reconciliation'
+  | 'partial';
+
+/** internal-controlled 单实体写入结果 */
+export interface InternalWriteResultItem {
+  entity_type: 'customer' | 'project' | 'model';
+  target_table_id: string;
+  business_record_id: string | null;
+  created: boolean;
+  status: 'succeeded' | 'failed' | 'unknown' | 'not_attempted';
+  error_code?: string;
+  write_log_id?: string;
+}
+
+/** internal-controlled 写入结果 */
+export interface InternalControlledWriteResult {
+  // 放宽为 string：容忍后端新增的状态值
+  status: string;
+  write_results: InternalWriteResultItem[];
+  transaction_snapshot_id?: string;
+  error_code?: string;
+  additional_create_calls: number;
+  completed_at?: string;
+  reconciliation?: string;
+}
+
+/** internal-controlled preview 响应（8a/8b 共用） */
+export interface InternalWritePreview {
+  preview_id: string;
+  nonce: string;
+  ingestion_id: string;
+  candidate_id: string;
+  candidate_digest: string;
+  governance_digest: string;
+  authoritative_plan_digest: string;
+  operator: string;
+  target_tables: Array<'customer' | 'project' | 'model'>;
+  target_table_digests?: Partial<Record<'customer' | 'project' | 'model', string>>;
+  base_token_digest?: string;
+  created_at: string;
+  expires_at: string;
+  // 放宽为 string：容忍后端新增的状态值
+  status: string;
+  confirmed_by?: string;
+  confirmed_at?: string;
+  executed_by?: string;
+  executed_at?: string;
+  result?: InternalControlledWriteResult;
+}
+
+// ============================================================================
 // Portal 前端专用类型（不在 API 契约中）
 // ============================================================================
 
@@ -408,6 +487,10 @@ export interface ScreenshotItem {
   executing: boolean;
   /** 是否正在提交（防止重复点击） */
   submitting: boolean;
+  /** FAMP-INTERNAL-CONTROLLED-WRITE-01: internal-controlled preview 响应 */
+  internalPreview?: InternalWritePreview;
+  /** FAMP-INTERNAL-CONTROLLED-WRITE-01: internal-controlled 写入结果 */
+  internalWriteResult?: InternalControlledWriteResult;
 }
 
 /** 治理决策展示类型 */
