@@ -33,9 +33,17 @@ import * as mock from './api-mock';
 import { responseSchemas } from './schema-validation';
 import type { z } from 'zod';
 
-/** collator HTTP 服务 baseURL，从环境变量读取 */
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8787';
+/**
+ * 规范化 API Base URL：去除末尾 /，缺失时返回 null（fail closed）。
+ * FAMP-PORTAL-VERCEL-LOCAL-RUNTIME-01: Production 不允许静默回退到 mock。
+ */
+function normalizeApiBaseUrl(raw: string | undefined): string | null {
+  if (!raw || raw.trim().length === 0) return null;
+  return raw.trim().replace(/\/+$/, '');
+}
+
+/** collator HTTP 服务 baseURL，从环境变量读取并规范化 */
+const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_BASE_URL) ?? 'http://127.0.0.1:8787';
 
 /** 默认超时 30s */
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -398,4 +406,114 @@ export function getConfiguredApiClient(): ApiClient {
 /** 获取当前配置的 collator baseURL（用于 UI 展示） */
 export function getApiBaseUrl(): string {
   return API_BASE_URL;
+}
+
+// ============================================================================
+// 本地运行时健康检查（FAMP-PORTAL-VERCEL-LOCAL-RUNTIME-01 §5）
+// ============================================================================
+
+/** 连接状态 */
+export type RuntimeStatus =
+  | 'checking'
+  | 'connected'
+  | 'collator_offline'
+  | 'sop_unavailable'
+  | 'browser_blocked';
+
+/** 健康检查结果 */
+export interface HealthCheckResult {
+  status: RuntimeStatus;
+  collatorReady: boolean;
+  sopReady: boolean;
+  message: string;
+}
+
+/**
+ * 检查本地运行时连接状态。
+ *
+ * 只执行只读 GET /readyz，短超时 3 秒。
+ * 不无限轮询：页面首次加载一次、用户点击"重新检测"一次、写入流程开始前一次。
+ */
+export async function checkRuntimeHealth(): Promise<HealthCheckResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch(`${API_BASE_URL}/readyz`, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) {
+      return {
+        status: 'collator_offline',
+        collatorReady: false,
+        sopReady: false,
+        message: `Collator 返回 HTTP ${res.status}`,
+      };
+    }
+    const data = await res.json();
+    const collatorReady = data?.status === 'ready';
+    // Collator /readyz 只检查自身就绪；SOP 就绪由 Collator 内部治理门卫保证。
+    // 如果 Collator 在线但 SOP 不可达，写入流程会在 confirm 阶段 fail closed。
+    return {
+      status: collatorReady ? 'connected' : 'collator_offline',
+      collatorReady,
+      sopReady: collatorReady, // 简化：Collator ready 隐含 SOP 可达
+      message: collatorReady
+        ? '本地运行时已连接'
+        : 'Collator 未就绪',
+    };
+  } catch (err) {
+    const isAbort =
+      err instanceof Error &&
+      (err.name === 'AbortError' || err.name === 'TimeoutError');
+    if (isAbort) {
+      return {
+        status: 'browser_blocked',
+        collatorReady: false,
+        sopReady: false,
+        message: '浏览器拒绝本地网络访问（请检查权限设置）',
+      };
+    }
+    return {
+      status: 'collator_offline',
+      collatorReady: false,
+      sopReady: false,
+      message: 'Collator 未启动',
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ============================================================================
+// 运行时模式配置（FAMP-PORTAL-VERCEL-LOCAL-RUNTIME-01 §2）
+// ============================================================================
+
+/** 运行时模式 */
+export type RuntimeMode = 'local-companion' | 'demo';
+
+/** 写入模式 */
+export type WriteMode = 'controlled' | 'dry-only';
+
+/** 获取运行时模式 */
+export function getRuntimeMode(): RuntimeMode {
+  const raw = process.env.NEXT_PUBLIC_RUNTIME_MODE;
+  if (raw === 'local-companion') return 'local-companion';
+  if (raw === 'demo') return 'demo';
+  // 默认 demo（安全侧）
+  return 'demo';
+}
+
+/** 获取写入模式 */
+export function getWriteMode(): WriteMode {
+  const raw = process.env.NEXT_PUBLIC_WRITE_MODE;
+  if (raw === 'controlled') return 'controlled';
+  if (raw === 'dry-only') return 'dry-only';
+  return 'dry-only';
+}
+
+/** 是否为受控写入环境（非 Demo 模式） */
+export function isControlledWriteEnvironment(): boolean {
+  return getApiMode() === 'real' && getRuntimeMode() === 'local-companion';
 }

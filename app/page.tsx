@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { usePortalStore } from '@/lib/store';
-import { getApiBaseUrl, isTerminalStatus } from '@/lib/api-client';
+import {
+  isTerminalStatus,
+  isControlledWriteEnvironment,
+} from '@/lib/api-client';
 import { UploadZone } from '@/components/UploadZone';
 import { ScreenshotList } from '@/components/ScreenshotList';
 import { ProcessingStatus } from '@/components/ProcessingStatus';
@@ -10,17 +13,23 @@ import { EvidenceViewer } from '@/components/EvidenceViewer';
 import { CorrectionForm } from '@/components/CorrectionForm';
 import { ResultPanel } from '@/components/ResultPanel';
 import { DemoDisclosureBanner } from '@/components/DemoDisclosureBanner';
-import type { ScreenshotItem } from '@/lib/types';
+import { RuntimeStatusBar } from '@/components/RuntimeStatusBar';
+import { StepIndicator } from '@/components/StepIndicator';
+import { GovernanceCard } from '@/components/GovernanceCard';
+import { WritePreview } from '@/components/WritePreview';
+import { ExecuteConfirmDialog } from '@/components/ExecuteConfirmDialog';
+import type { ScreenshotItem, ProcessingStage } from '@/lib/types';
 
 export default function HomePage() {
   const screenshots = usePortalStore((s) => s.screenshots);
   const apiMode = usePortalStore((s) => s.apiMode);
-  const setApiMode = usePortalStore((s) => s.setApiMode);
   const selectedLocalId = usePortalStore((s) => s.selectedLocalId);
   const submitScreenshot = usePortalStore((s) => s.submitScreenshot);
   const pollStatus = usePortalStore((s) => s.pollStatus);
   const loadEvidence = usePortalStore((s) => s.loadEvidence);
-  const confirmWrite = usePortalStore((s) => s.confirmWrite);
+  const generatePreview = usePortalStore((s) => s.generatePreview);
+  const confirmPreview = usePortalStore((s) => s.confirmPreview);
+  const executeWrite = usePortalStore((s) => s.executeWrite);
   const escalateReview = usePortalStore((s) => s.escalateReview);
   const loadFinalResult = usePortalStore((s) => s.loadFinalResult);
 
@@ -29,13 +38,14 @@ export default function HomePage() {
   const [escalateReasonCode, setEscalateReasonCode] = useState('PROJECT_TYPE_REQUIRED');
   const [escalateReason, setEscalateReason] = useState('');
   const [dryRun, setDryRun] = useState(false);
+  const [showExecuteDialog, setShowExecuteDialog] = useState(false);
 
-  // 自动轮询：当选中项有 screenshotId 且未到 done 阶段时
-  // AC-A04：最大轮询次数 60（60 × 2s = 2 分钟），终态自动终止
+  const isControlled = isControlledWriteEnvironment();
+
+  // 自动轮询
   useEffect(() => {
     if (!selectedItem?.screenshotId) return;
     if (selectedItem.stage === 'done') return;
-    // 已到达终态则不再轮询（双重保障，防止 mapStatusToStage 遗漏）
     if (selectedItem.serverStatus && isTerminalStatus(selectedItem.serverStatus)) return;
 
     let attempts = 0;
@@ -43,10 +53,7 @@ export default function HomePage() {
     const timer = setInterval(() => {
       attempts += 1;
       if (attempts > MAX_POLL_ATTEMPTS) {
-        console.warn(
-          `[Portal] 轮询达到最大次数 (${MAX_POLL_ATTEMPTS})，停止轮询。` +
-            '可点击「刷新状态」手动重试。',
-        );
+        console.warn(`[Portal] 轮询达到最大次数 (${MAX_POLL_ATTEMPTS})，停止轮询。`);
         clearInterval(timer);
         return;
       }
@@ -55,54 +62,100 @@ export default function HomePage() {
     return () => clearInterval(timer);
   }, [selectedItem?.screenshotId, selectedItem?.stage, selectedItem?.localId, selectedItem?.serverStatus, pollStatus]);
 
-  return (
-    <main className="flex-1 w-full max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-6">
-      {/* 顶部 Disclosure 横幅：显著标记 Demo / Mock / Dry-run 状态 */}
-      <DemoDisclosureBanner apiMode={apiMode} dryRun={dryRun} />
+  // 治理通过后自动加载证据（如果尚未加载）
+  useEffect(() => {
+    if (!selectedItem?.screenshotId) return;
+    if (selectedItem.serverStatus === 'candidate_drafted' && !selectedItem.evidenceResponse) {
+      loadEvidence(selectedItem.localId);
+    }
+  }, [selectedItem?.screenshotId, selectedItem?.serverStatus, selectedItem?.evidenceResponse, selectedItem?.localId, loadEvidence]);
 
-      {/* 顶部标题栏 */}
-      <header className="mb-4 sm:mb-6">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-bold text-gray-900">智能录入台</h1>
-            <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
-              飞书智能业务数据中台 · 截图智能录入 Portal MVP
-            </p>
+  return (
+    <>
+      {/* 顶部导航 */}
+      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-gray-200 px-4 sm:px-6 py-2.5">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <h1 className="text-base sm:text-lg font-bold text-gray-900 truncate">飞书智能录入台</h1>
+            <p className="text-[10px] sm:text-xs text-gray-400 hidden sm:block">AI-native Intake Console</p>
           </div>
-          <ModeSwitcher apiMode={apiMode} onModeChange={setApiMode} />
+          <div className="flex items-center gap-3 sm:gap-4 shrink-0">
+            <RuntimeStatusBar />
+            {isControlled && (
+              <span className="hidden sm:inline-flex px-2 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                受控写入环境
+              </span>
+            )}
+          </div>
         </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 sm:gap-6">
-        {/* 左栏：上传 + 列表 */}
-        <section className="lg:col-span-2 space-y-4">
-          <div className="rounded-xl bg-white p-4 shadow-sm border border-gray-100">
-            <UploadZone />
-          </div>
-          <div className="rounded-xl bg-white p-4 shadow-sm border border-gray-100">
-            <ScreenshotList />
-          </div>
-        </section>
-
-        {/* 右栏：详情面板 */}
-        <section className="lg:col-span-3">
-          {selectedItem ? (
-            <DetailPanel
-              item={selectedItem}
-              dryRun={dryRun}
-              onDryRunChange={setDryRun}
-              onSubmit={() => submitScreenshot(selectedItem.localId, dryRun)}
-              onPoll={() => pollStatus(selectedItem.localId)}
-              onLoadEvidence={() => loadEvidence(selectedItem.localId)}
-              onConfirm={() => confirmWrite(selectedItem.localId, dryRun)}
-              onShowEscalate={() => setShowEscalate(true)}
-              onReloadFinal={() => loadFinalResult(selectedItem.localId)}
-            />
-          ) : (
-            <EmptyDetail />
-          )}
-        </section>
+      {/* Demo 披露横幅 */}
+      <div className="px-3 sm:px-6 pt-3">
+        <div className="max-w-6xl mx-auto">
+          <DemoDisclosureBanner apiMode={apiMode} dryRun={dryRun} />
+        </div>
       </div>
+
+      {/* 步骤条 */}
+      {selectedItem && (
+        <div className="px-3 sm:px-6 py-3 bg-white border-b border-gray-100">
+          <div className="max-w-6xl mx-auto">
+            <StepIndicator currentStage={selectedItem.stage} />
+          </div>
+        </div>
+      )}
+
+      {/* 主内容区 */}
+      <main className="flex-1 w-full max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-6 pb-28 sm:pb-24">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 sm:gap-6">
+          {/* 左栏：上传 + 列表 */}
+          <section className="lg:col-span-2 space-y-4">
+            <div className="rounded-xl bg-white p-4 shadow-sm border border-gray-100">
+              <UploadZone />
+            </div>
+            <div className="rounded-xl bg-white p-4 shadow-sm border border-gray-100">
+              <ScreenshotList />
+            </div>
+          </section>
+
+          {/* 右栏：详情面板 */}
+          <section className="lg:col-span-3">
+            {selectedItem ? (
+              <DetailPanel
+                item={selectedItem}
+                dryRun={dryRun}
+                onDryRunChange={setDryRun}
+                isControlled={isControlled}
+                onSubmit={() => submitScreenshot(selectedItem.localId, dryRun)}
+                onPoll={() => pollStatus(selectedItem.localId)}
+                onLoadEvidence={() => loadEvidence(selectedItem.localId)}
+                onGeneratePreview={() => generatePreview(selectedItem.localId)}
+                onConfirmPreview={() => confirmPreview(selectedItem.localId)}
+                onExecuteClick={() => setShowExecuteDialog(true)}
+                onShowEscalate={() => setShowEscalate(true)}
+                onReloadFinal={() => loadFinalResult(selectedItem.localId)}
+              />
+            ) : (
+              <EmptyDetail />
+            )}
+          </section>
+        </div>
+      </main>
+
+      {/* 执行确认弹窗 */}
+      {selectedItem && (
+        <ExecuteConfirmDialog
+          open={showExecuteDialog}
+          dryRun={dryRun}
+          executing={selectedItem.executing}
+          onConfirm={async () => {
+            setShowExecuteDialog(false);
+            await executeWrite(selectedItem.localId, dryRun);
+          }}
+          onCancel={() => setShowExecuteDialog(false)}
+        />
+      )}
 
       {/* 转复核对话框 */}
       {showEscalate && selectedItem && (
@@ -123,47 +176,7 @@ export default function HomePage() {
           }}
         />
       )}
-    </main>
-  );
-}
-
-/** 模式切换器 */
-function ModeSwitcher({
-  apiMode,
-  onModeChange,
-}: {
-  apiMode: 'mock' | 'real';
-  onModeChange: (m: 'mock' | 'real') => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 text-xs sm:text-sm">
-      <span className="text-gray-500">API 模式:</span>
-      <div className="flex rounded-md border border-gray-300 overflow-hidden">
-        <button
-          type="button"
-          onClick={() => onModeChange('mock')}
-          className={`px-3 py-1 font-medium transition-colors ${
-            apiMode === 'mock' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-          }`}
-        >
-          Mock
-        </button>
-        <button
-          type="button"
-          onClick={() => onModeChange('real')}
-          className={`px-3 py-1 font-medium transition-colors ${
-            apiMode === 'real' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-          }`}
-        >
-          Real
-        </button>
-      </div>
-      {apiMode === 'real' && (
-        <span className="text-[10px] text-gray-400 hidden sm:inline">
-          → {getApiBaseUrl()}
-        </span>
-      )}
-    </div>
+    </>
   );
 }
 
@@ -171,20 +184,11 @@ function ModeSwitcher({
 function EmptyDetail() {
   return (
     <div className="rounded-xl bg-white p-8 shadow-sm border border-gray-100 h-full flex flex-col items-center justify-center text-center min-h-[300px]">
-      <svg
-        className="w-16 h-16 text-gray-300 mb-3"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-        strokeWidth={1}
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z"
-        />
+      <svg className="w-16 h-16 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
       </svg>
-      <p className="text-gray-500 text-sm">请上传截图后查看处理详情</p>
+      <p className="text-gray-500 text-sm">上传截图后开始智能录入流程</p>
+      <p className="text-gray-400 text-xs mt-1">支持 JPEG / PNG，最多 10 张</p>
     </div>
   );
 }
@@ -194,10 +198,13 @@ interface DetailProps {
   item: ScreenshotItem;
   dryRun: boolean;
   onDryRunChange: (v: boolean) => void;
+  isControlled: boolean;
   onSubmit: () => void;
   onPoll: () => void;
   onLoadEvidence: () => void;
-  onConfirm: () => void;
+  onGeneratePreview: () => void;
+  onConfirmPreview: () => void;
+  onExecuteClick: () => void;
   onShowEscalate: () => void;
   onReloadFinal: () => void;
 }
@@ -206,24 +213,25 @@ function DetailPanel({
   item,
   dryRun,
   onDryRunChange,
+  isControlled,
   onSubmit,
   onPoll,
   onLoadEvidence,
-  onConfirm,
+  onGeneratePreview,
+  onConfirmPreview,
+  onExecuteClick,
   onShowEscalate,
   onReloadFinal,
 }: DetailProps) {
   const canLoadEvidence =
     item.screenshotId &&
-    (item.stage === 'candidate' ||
-      item.stage === 'governance' ||
-      item.stage === 'write' ||
-      item.stage === 'done' ||
-      item.serverStatus === 'candidate_drafted' ||
-      item.serverStatus === 'ocr_completed' ||
-      item.serverStatus === 'governance_passed');
-  const canConfirm = item.evidenceResponse && item.stage !== 'done';
+    (item.stage === 'candidate' || item.stage === 'governance' || item.stage === 'preview' || item.stage === 'write' || item.stage === 'done' ||
+      item.serverStatus === 'candidate_drafted' || item.serverStatus === 'ocr_completed' || item.serverStatus === 'governance_passed');
+  const canGeneratePreview = item.evidenceResponse && (item.stage === 'governance' || item.stage === 'candidate') && item.serverStatus !== 'governance_blocked';
+  const canConfirmPreview = item.stage === 'preview' && !item.previewConfirmed;
+  const canExecute = item.stage === 'preview' && item.previewConfirmed;
   const canEscalate = item.evidenceResponse && item.stage !== 'done';
+  const isPartial = item.confirmResponse && item.serverStatus !== 'write_succeeded' && item.serverStatus !== 'duplicate_skipped';
 
   return (
     <div className="rounded-xl bg-white p-4 sm:p-5 shadow-sm border border-gray-100 space-y-4">
@@ -237,13 +245,12 @@ function DetailPanel({
         />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-gray-900 truncate">{item.filename}</p>
-          <p className="text-xs text-gray-500 mt-0.5">
-            ID: {item.screenshotId ?? '未提交'}
-          </p>
+          <p className="text-xs text-gray-500 mt-0.5">ID: {item.screenshotId ?? '未提交'}</p>
           {item.hasCorrections && (
-            <span className="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
-              已修改
-            </span>
+            <span className="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">已修改</span>
+          )}
+          {item.previewConfirmed && (
+            <span className="inline-block mt-1 ml-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">Preview 已确认</span>
           )}
         </div>
       </div>
@@ -253,10 +260,9 @@ function DetailPanel({
         <ProcessingStatus item={item} />
       </div>
 
-      {/* 操作按钮区 */}
+      {/* 操作按钮区（步骤 01-02） */}
       <div className="border-t pt-3 space-y-2">
         <div className="flex flex-wrap gap-2">
-          {/* 提交按钮 */}
           {!item.screenshotId && (
             <button
               type="button"
@@ -264,11 +270,9 @@ function DetailPanel({
               onClick={onSubmit}
               className="px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
-              {item.submitting ? '提交中...' : '提交到 collator'}
+              {item.submitting ? '提交中...' : '提交到 Collator'}
             </button>
           )}
-
-          {/* 轮询按钮 */}
           {item.screenshotId && item.stage !== 'done' && (
             <button
               type="button"
@@ -278,8 +282,6 @@ function DetailPanel({
               刷新状态
             </button>
           )}
-
-          {/* 加载证据按钮 */}
           {canLoadEvidence && !item.evidenceResponse && (
             <button
               type="button"
@@ -290,64 +292,127 @@ function DetailPanel({
             </button>
           )}
         </div>
-
-        {/* 干运行开关 */}
         <label className="flex items-center gap-2 text-xs text-gray-600">
-          <input
-            type="checkbox"
-            checked={dryRun}
-            onChange={(e) => onDryRunChange(e.target.checked)}
-            className="rounded"
-          />
+          <input type="checkbox" checked={dryRun} onChange={(e) => onDryRunChange(e.target.checked)} className="rounded" />
           干运行（Dry Run，不实际写入飞书）
         </label>
       </div>
 
-      {/* 证据查看器 */}
-      {item.evidenceResponse && (
-        <div className="border-t pt-3">
-          <EvidenceViewer evidence={item.evidenceResponse} />
-        </div>
-      )}
-
-      {/* 修正表单 */}
+      {/* 证据 + 修正（步骤 02-03，桌面端双栏） */}
       {item.evidenceResponse && item.stage !== 'done' && (
         <div className="border-t pt-3">
-          <CorrectionForm item={item} evidence={item.evidenceResponse} />
+          {/* 桌面端双栏 */}
+          <div className="hidden md:grid md:grid-cols-[45%_55%] gap-4">
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold text-gray-700">证据</h4>
+              <EvidenceViewer evidence={item.evidenceResponse} />
+            </div>
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold text-gray-700">修正</h4>
+              <CorrectionForm item={item} evidence={item.evidenceResponse} />
+            </div>
+          </div>
+          {/* 移动端单栏 */}
+          <div className="md:hidden space-y-4">
+            <div>
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">证据</h4>
+              <EvidenceViewer evidence={item.evidenceResponse} />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">修正</h4>
+              <CorrectionForm item={item} evidence={item.evidenceResponse} />
+            </div>
+          </div>
         </div>
       )}
 
-      {/* 确认写入 / 转复核 */}
+      {/* SOP 治理状态卡 */}
+      {(item.serverStatus === 'governance_passed' || item.serverStatus === 'governance_needs_review' || item.serverStatus === 'governance_blocked' || item.serverStatus === 'duplicate_skipped') && (
+        <div className="border-t pt-3">
+          <GovernanceCard item={item} />
+        </div>
+      )}
+
+      {/* 写入 Preview（步骤 04） */}
+      {item.stage === 'preview' && item.evidenceResponse && (
+        <div className="border-t pt-3 space-y-3">
+          <WritePreview item={item} evidence={item.evidenceResponse} />
+        </div>
+      )}
+
+      {/* 底部操作栏（步骤 04-05：Confirm/Execute 分离） */}
       {item.evidenceResponse && item.stage !== 'done' && (
         <div className="border-t pt-3 space-y-2">
           <h4 className="text-sm font-semibold text-gray-700">写入操作</h4>
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={item.submitting || !canConfirm}
-              onClick={onConfirm}
-              className="px-4 py-2 rounded-md text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-            >
-              {item.submitting ? '处理中...' : dryRun ? '确认写入（干运行）' : '确认写入飞书'}
-            </button>
-            <button
-              type="button"
-              disabled={item.submitting || !canEscalate}
-              onClick={onShowEscalate}
-              className="px-4 py-2 rounded-md text-sm font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
-            >
-              转人工复核
-            </button>
+            {/* 生成写入 Preview */}
+            {canGeneratePreview && (
+              <button
+                type="button"
+                onClick={onGeneratePreview}
+                className="px-4 py-2 rounded-md text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+              >
+                生成写入预览
+              </button>
+            )}
+            {/* 确认 Preview */}
+            {canConfirmPreview && (
+              <button
+                type="button"
+                onClick={onConfirmPreview}
+                className="px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+              >
+                确认预览
+              </button>
+            )}
+            {/* 执行真实写入（AC-14: Confirm 不会自动触发 Execute） */}
+            {canExecute && (
+              <button
+                type="button"
+                disabled={item.executing}
+                onClick={onExecuteClick}
+                className={`px-4 py-2 rounded-md text-sm font-medium text-white transition-colors disabled:bg-gray-300
+                  ${dryRun ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-600 hover:bg-red-700'}`}
+              >
+                {item.executing ? '执行中...' : dryRun ? '执行干运行' : '执行真实写入'}
+              </button>
+            )}
+            {/* 转人工复核 */}
+            {canEscalate && (
+              <button
+                type="button"
+                onClick={onShowEscalate}
+                className="px-4 py-2 rounded-md text-sm font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 transition-colors"
+              >
+                转人工复核
+              </button>
+            )}
           </div>
-          <p className="text-[10px] text-gray-400">
-            确认写入后，数据将通过 collator 写入飞书业务表。重复点击已被禁用，服务端以幂等键为准。
-          </p>
+          {/* AC-14 提示 */}
+          {item.stage === 'preview' && !item.previewConfirmed && (
+            <p className="text-[10px] text-gray-400">请先确认预览，然后才能执行写入。</p>
+          )}
+          {item.stage === 'preview' && item.previewConfirmed && (
+            <p className="text-[10px] text-amber-600">预览已确认，可执行写入。执行前将再次弹出确认。</p>
+          )}
         </div>
       )}
 
-      {/* 最终结果 */}
+      {/* 最终结果（步骤 05） */}
       {item.stage === 'done' && (
         <div className="border-t pt-3">
+          {/* partial 不使用绿色成功样式 */}
+          {isPartial && (
+            <div className="mb-3 rounded-lg border-2 border-amber-300 bg-amber-50 p-3">
+              <div className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+                <span className="text-sm font-bold text-amber-800">部分完成，需要处理</span>
+              </div>
+              <p className="text-xs text-amber-700 mt-1">已产生真实业务记录，禁止直接重新执行。</p>
+            </div>
+          )}
           <ResultPanel item={item} />
           <div className="mt-3 flex gap-2">
             <button
@@ -413,19 +478,8 @@ function EscalateDialog({
           </div>
         </div>
         <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-3 py-1.5 rounded-md text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={onConfirm}
-            className="px-4 py-1.5 rounded-md text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:bg-gray-300 transition-colors"
-          >
+          <button type="button" onClick={onCancel} className="px-3 py-1.5 rounded-md text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors">取消</button>
+          <button type="button" disabled={submitting} onClick={onConfirm} className="px-4 py-1.5 rounded-md text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:bg-gray-300 transition-colors">
             {submitting ? '提交中...' : '确认转复核'}
           </button>
         </div>

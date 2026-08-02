@@ -362,6 +362,7 @@ export type ProcessingStage =
   | 'ocr'
   | 'candidate'
   | 'governance'
+  | 'preview'
   | 'write'
   | 'done';
 
@@ -401,6 +402,10 @@ export interface ScreenshotItem {
   escalateResponse?: EscalateReviewResponse;
   /** 最终结果响应 */
   finalResultResponse?: GetFinalResultResponse;
+  /** 写入 Preview 是否已确认（Confirm/Execute 分离，AC-14/AC-15） */
+  previewConfirmed: boolean;
+  /** 是否正在执行写入（区别于 submitting） */
+  executing: boolean;
   /** 是否正在提交（防止重复点击） */
   submitting: boolean;
 }

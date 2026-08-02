@@ -14,11 +14,12 @@ const STAGES: Array<{ key: ProcessingStage; label: string }> = [
   { key: 'ocr', label: 'OCR' },
   { key: 'candidate', label: '候选' },
   { key: 'governance', label: '治理' },
+  { key: 'preview', label: '预览' },
   { key: 'write', label: '写入' },
   { key: 'done', label: '完成' },
 ];
 
-const STAGE_ORDER: ProcessingStage[] = ['idle', 'uploading', 'ocr', 'candidate', 'governance', 'write', 'done'];
+const STAGE_ORDER: ProcessingStage[] = ['idle', 'uploading', 'ocr', 'candidate', 'governance', 'preview', 'write', 'done'];
 
 interface Props {
   item: ScreenshotItem;

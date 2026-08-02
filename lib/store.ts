@@ -79,8 +79,14 @@ interface PortalState {
   loadEvidence: (localId: string) => Promise<void>;
   /** 提交人工修正 */
   submitCorrections: (localId: string) => Promise<void>;
-  /** 确认写入 */
+  /** 确认写入（legacy，保留向后兼容） */
   confirmWrite: (localId: string, dryRun?: boolean) => Promise<void>;
+  /** 生成写入 Preview（FAMP-PORTAL-VERCEL-LOCAL-RUNTIME-01 §7: Confirm/Execute 分离） */
+  generatePreview: (localId: string) => void;
+  /** 确认 Preview（UI 状态变更，不调用 API） */
+  confirmPreview: (localId: string) => void;
+  /** 执行真实写入（仅在 Preview 确认后可调用，调用 confirm API） */
+  executeWrite: (localId: string, dryRun?: boolean) => Promise<void>;
   /** 转人工复核 */
   escalateReview: (localId: string, reasonCode: string, reason: string) => Promise<void>;
   /** 加载最终结果 */
@@ -127,6 +133,8 @@ export const usePortalStore = create<PortalState>((set, get) => ({
         corrections: {},
         hasCorrections: false,
         submitting: false,
+        previewConfirmed: false,
+        executing: false,
       });
     }
     if (items.length === 0) return;
@@ -314,6 +322,51 @@ export const usePortalStore = create<PortalState>((set, get) => ({
       get().updateScreenshot(localId, {
         submitting: false,
         error: `确认写入失败: ${message}`,
+      });
+    }
+  },
+
+  // FAMP-PORTAL-VERCEL-LOCAL-RUNTIME-01 §7: Confirm/Execute 分离
+  generatePreview: (localId) => {
+    get().updateScreenshot(localId, {
+      stage: 'preview',
+      previewConfirmed: false,
+      error: undefined,
+    });
+  },
+
+  confirmPreview: (localId) => {
+    get().updateScreenshot(localId, { previewConfirmed: true });
+  },
+
+  executeWrite: async (localId, dryRun = false) => {
+    const state = get();
+    const item = state.screenshots.find((it) => it.localId === localId);
+    if (!item || !item.screenshotId) return;
+    if (!item.previewConfirmed) return; // AC-14: Preview 未确认时禁止执行
+    if (item.submitting || item.executing) return; // 防重复
+    get().updateScreenshot(localId, { executing: true, error: undefined, stage: 'write' });
+    try {
+      const client = getApiClient(state.apiMode);
+      const req: ConfirmWriteRequest = {
+        reviewer_id: DEFAULT_REVIEWER_ID,
+        candidate_v1_id: item.evidenceResponse?.candidate_v1.candidate_id ?? '',
+        dry_run: dryRun,
+      };
+      const resp = await client.confirmWrite(item.screenshotId, req);
+      get().updateScreenshot(localId, {
+        executing: false,
+        submitting: false,
+        confirmResponse: resp,
+        serverStatus: resp.status,
+        stage: resp.status === 'write_succeeded' ? 'done' : 'write',
+      });
+      await get().loadFinalResult(localId);
+    } catch (err) {
+      const message = err instanceof ScreenshotApiError ? err.message : String(err);
+      get().updateScreenshot(localId, {
+        executing: false,
+        error: `执行写入失败: ${message}`,
       });
     }
   },
