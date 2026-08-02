@@ -45,14 +45,14 @@ export interface ApiErrorResponse {
   };
 }
 
-/** 写入结果状态 */
-export type WriteResultStatus = 'succeeded' | 'failed' | 'rolled_back' | 'not_attempted';
+/** 写入结果状态 — 放宽为 string 以容忍 SOP 大写枚举值 */
+export type WriteResultStatus = string;
 
 /** 单实体写入结果 */
 export interface WriteResult {
   entity_type: 'customer' | 'project' | 'model';
   target_table_id: string;
-  business_record_id: string | null;
+  business_record_id?: string | null;
   created: boolean;
   status: WriteResultStatus;
   error_code?: string;
@@ -303,15 +303,15 @@ export interface GetFinalResultResponse {
     write: {
       status: WriteResultStatus;
       target_table: string;
-      target_record_id: string | null;
+      target_record_id?: string | null;
       attempted_at?: string;
     };
     review: {
       status: string;
-      review_task_id: string | null;
+      review_task_id?: string | null;
       ai_explanation?: {
         available: boolean;
-        reason: string;
+        reason?: string;
         summary?: string;
         suggested_fix?: string;
       };
@@ -319,16 +319,16 @@ export interface GetFinalResultResponse {
     audit: {
       audit_id: string;
       timestamp: string;
-      source_record_id: string;
-      idempotency_key: string;
-      rule_version: string;
+      source_record_id?: string;
+      idempotency_key?: string;
+      rule_version?: string;
     };
   };
   write_logs: Array<{
     write_log_id: string;
     ingestion_id: string;
     target_table_id: string;
-    business_record_id: string | null;
+    business_record_id?: string | null;
     status: WriteResultStatus;
     error_code?: string;
     created_at: string;
