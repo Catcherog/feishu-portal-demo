@@ -149,9 +149,15 @@ function validateOrThrow<T>(
 ): T {
   const result = schema.safeParse(data);
   if (!result.success) {
+    // 提取第一个 issue 的路径和消息，便于诊断
+    const firstIssue = result.error.issues[0];
+    const pathStr = firstIssue?.path?.length ? firstIssue.path.join('.') : '(root)';
+    const detailMsg = firstIssue
+      ? `${firstIssue.message} (path: ${pathStr})`
+      : 'unknown issue';
     throw new ScreenshotApiError(
       'SCHEMA_VALIDATION_FAILED',
-      `响应结构校验失败: ${label}`,
+      `响应结构校验失败: ${label} — ${detailMsg}`,
       result.error.issues,
     );
   }

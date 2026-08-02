@@ -245,9 +245,10 @@ export const confirmWriteResponseSchema = z
         .object({
           entity_type: z.enum(['customer', 'project', 'model']),
           target_table_id: z.string(),
-          business_record_id: z.union([z.string(), z.null()]),
+          business_record_id: z.union([z.string(), z.null()]).optional(),
           created: z.boolean(),
-          status: writeResultStatusSchema,
+          // 放宽为 string：容忍 batchWriter 返回的大写值
+          status: z.string(),
           error_code: z.string().optional(),
           write_log_id: z.string().optional(),
         })
@@ -365,20 +366,23 @@ export const getFinalResultResponseSchema = z
         ),
         write: z
           .object({
-            status: writeResultStatusSchema,
+            // 放宽为 string：SOP 返回大写 'NOT_ATTEMPTED' 等，
+            // collator getFinalResult 重新计算为小写，但需容忍两种来源
+            status: z.string(),
             target_table: z.string(),
-            target_record_id: z.union([z.string(), z.null()]),
+            target_record_id: z.union([z.string(), z.null()]).optional(),
             attempted_at: z.string().optional(),
           })
           .loose(),
         review: z
           .object({
             status: z.string(),
-            review_task_id: z.union([z.string(), z.null()]),
+            // 可能为 undefined（SOP 返回 null，但 JS 序列化可能丢失）
+            review_task_id: z.union([z.string(), z.null()]).optional(),
             ai_explanation: z
               .object({
                 available: z.boolean(),
-                reason: z.string(),
+                reason: z.string().optional(),
                 summary: z.string().optional(),
                 suggested_fix: z.string().optional(),
               })
@@ -390,9 +394,9 @@ export const getFinalResultResponseSchema = z
           .object({
             audit_id: z.string(),
             timestamp: z.string(),
-            source_record_id: z.string(),
-            idempotency_key: z.string(),
-            rule_version: z.string(),
+            source_record_id: z.string().optional(),
+            idempotency_key: z.string().optional(),
+            rule_version: z.string().optional(),
           })
           .loose(),
       })
@@ -403,8 +407,10 @@ export const getFinalResultResponseSchema = z
           write_log_id: z.string(),
           ingestion_id: z.string(),
           target_table_id: z.string(),
-          business_record_id: z.union([z.string(), z.null()]),
-          status: writeResultStatusSchema,
+          // 可能为 undefined（WriteResult 中 business_record_id 可能未设置）
+          business_record_id: z.union([z.string(), z.null()]).optional(),
+          // 放宽为 string：容忍 SOP 大写值
+          status: z.string(),
           error_code: z.string().optional(),
           created_at: z.string(),
         })
