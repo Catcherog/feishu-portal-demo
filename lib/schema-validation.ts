@@ -429,7 +429,8 @@ export const getFinalResultResponseSchema = z
     transaction_snapshot: z
       .object({
         snapshot_id: z.string(),
-        status: z.enum(['committed', 'rolled_back', 'partial']),
+        // 放宽为 string：后端 batchWriter 可能返回 'blocked' 等非枚举值
+        status: z.string(),
         records_created: z.number(),
         records_rolled_back: z.number(),
       })

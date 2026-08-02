@@ -341,7 +341,7 @@ export interface GetFinalResultResponse {
   } | null;
   transaction_snapshot?: {
     snapshot_id: string;
-    status: 'committed' | 'rolled_back' | 'partial';
+    status: string;
     records_created: number;
     records_rolled_back: number;
   };
