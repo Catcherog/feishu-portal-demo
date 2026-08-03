@@ -29,7 +29,7 @@ export function ResultPanel({ item }: Props) {
 
       {/* 决策状态卡片 */}
       <div
-        className={`rounded-lg border-2 p-4 ${getDecisionStyle(decision)}`}
+        className={`rounded-lg border-2 p-4 ${getDecisionStyle(decision, serverStatus)}`}
       >
         <div className="flex items-center gap-2">
           <DecisionIcon decision={decision} />
@@ -43,6 +43,21 @@ export function ResultPanel({ item }: Props) {
       {/* 最终结果详情 */}
       {finalResultResponse && (
         <div className="space-y-2">
+          {/* 执行终态：治理 PASS 与写入成功是两个独立结论 */}
+          <div className={`rounded-lg p-3 border ${getExecutionStatusStyle(finalResultResponse.final_status)}`}>
+            <h5 className="text-xs font-semibold mb-1">写入终态</h5>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span>状态：<code>{finalResultResponse.final_status}</code></span>
+              {finalResultResponse.error_code && (
+                <span>错误码：<code>{finalResultResponse.error_code}</code></span>
+              )}
+              {finalResultResponse.governance_result_v1.write.error_code &&
+                finalResultResponse.governance_result_v1.write.error_code !== finalResultResponse.error_code && (
+                  <span>写入错误：<code>{finalResultResponse.governance_result_v1.write.error_code}</code></span>
+                )}
+            </div>
+          </div>
+
           {/* 治理信息 */}
           {finalResultResponse.governance_result_v1 && (
             <div className="rounded-lg bg-gray-50 p-3 border border-gray-200">
@@ -212,7 +227,20 @@ function getDecisionLabel(d: GovernanceDecision): string {
 function getDecisionDescription(d: GovernanceDecision, status?: string): string {
   switch (d) {
     case 'PASS':
-      return status === 'write_succeeded' ? '治理通过并写入成功' : '治理通过';
+      switch (status) {
+        case 'write_succeeded':
+          return '治理通过并写入成功';
+        case 'write_partial':
+          return '治理通过，但写入仅部分完成';
+        case 'write_result_unknown':
+          return '治理通过，但写入结果未知，禁止重试';
+        case 'write_needs_reconciliation':
+          return '治理通过，但写入需要人工对账';
+        case 'write_failed':
+          return '治理通过，但写入失败';
+        default:
+          return '治理通过，尚未确认写入成功';
+      }
     case 'NEEDS_REVIEW':
       return '需人工复核后处理';
     case 'BLOCKED':
@@ -222,7 +250,15 @@ function getDecisionDescription(d: GovernanceDecision, status?: string): string 
   }
 }
 
-function getDecisionStyle(d: GovernanceDecision): string {
+function getDecisionStyle(d: GovernanceDecision, status?: string): string {
+  if (d === 'PASS') {
+    if (status === 'write_partial' || status === 'write_needs_reconciliation') {
+      return 'border-amber-500 bg-amber-50 text-amber-800';
+    }
+    if (status === 'write_failed' || status === 'write_result_unknown') {
+      return 'border-red-500 bg-red-50 text-red-800';
+    }
+  }
   switch (d) {
     case 'PASS':
       return 'border-green-500 bg-green-50 text-green-800';
@@ -232,6 +268,21 @@ function getDecisionStyle(d: GovernanceDecision): string {
       return 'border-red-500 bg-red-50 text-red-800';
     case 'DUPLICATE_SKIPPED':
       return 'border-gray-500 bg-gray-50 text-gray-800';
+  }
+}
+
+function getExecutionStatusStyle(status: string): string {
+  switch (status) {
+    case 'write_succeeded':
+      return 'border-green-200 bg-green-50 text-green-800';
+    case 'write_partial':
+    case 'write_needs_reconciliation':
+      return 'border-amber-300 bg-amber-50 text-amber-800';
+    case 'write_failed':
+    case 'write_result_unknown':
+      return 'border-red-300 bg-red-50 text-red-800';
+    default:
+      return 'border-gray-200 bg-gray-50 text-gray-700';
   }
 }
 

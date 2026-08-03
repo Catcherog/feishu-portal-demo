@@ -28,7 +28,11 @@ const STATUS_CONFIG: Record<RuntimeStatus, { color: string; dot: string; label: 
   browser_blocked: { color: 'text-gray-500', dot: 'bg-gray-400', label: '浏览器拒绝本地网络访问' },
 };
 
-export function RuntimeStatusBar() {
+interface RuntimeStatusBarProps {
+  onResult?: (result: HealthCheckResult) => void;
+}
+
+export function RuntimeStatusBar({ onResult }: RuntimeStatusBarProps) {
   const [result, setResult] = useState<HealthCheckResult | null>(null);
   const [checking, setChecking] = useState(false);
 
@@ -36,8 +40,9 @@ export function RuntimeStatusBar() {
     setChecking(true);
     const r = await checkRuntimeHealth();
     setResult(r);
+    onResult?.(r);
     setChecking(false);
-  }, []);
+  }, [onResult]);
 
   // 页面首次加载时检查一次
   useEffect(() => {

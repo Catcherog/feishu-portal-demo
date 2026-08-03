@@ -36,6 +36,7 @@ export function ProcessingStatus({ item }: Props) {
           const isDone = currentIdx > stageIdx;
           const isCurrent = currentIdx === stageIdx;
           const isFailed = item.stage === 'done' && isWriteFailed(item.serverStatus);
+          const isWarning = item.stage === 'done' && isWriteWarning(item.serverStatus);
 
           return (
             <div key={s.key} className="flex items-center shrink-0">
@@ -43,8 +44,9 @@ export function ProcessingStatus({ item }: Props) {
                 <div
                   className={`flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-full text-xs font-medium border-2 transition-colors
                     ${isDone ? 'bg-green-500 border-green-500 text-white' : ''}
-                    ${isCurrent && !isFailed ? 'bg-blue-500 border-blue-500 text-white animate-pulse' : ''}
+                    ${isCurrent && !isFailed && !isWarning ? 'bg-blue-500 border-blue-500 text-white animate-pulse' : ''}
                     ${isCurrent && isFailed ? 'bg-red-500 border-red-500 text-white' : ''}
+                    ${isCurrent && isWarning ? 'bg-amber-500 border-amber-500 text-white' : ''}
                     ${!isDone && !isCurrent ? 'bg-white border-gray-300 text-gray-400' : ''}`}
                 >
                   {isDone ? (
@@ -59,7 +61,9 @@ export function ProcessingStatus({ item }: Props) {
                   className={`text-[10px] sm:text-xs ${
                     isCurrent && isFailed
                       ? 'text-red-600 font-medium'
-                      : isCurrent || isDone
+                      : isCurrent && isWarning
+                        ? 'text-amber-700 font-medium'
+                        : isCurrent || isDone
                         ? 'text-gray-800 font-medium'
                         : 'text-gray-400'
                   }`}
@@ -107,5 +111,14 @@ export function ProcessingStatus({ item }: Props) {
 }
 
 function isWriteFailed(status?: ScreenshotStatus): boolean {
-  return status === 'write_failed' || status === 'governance_blocked';
+  return (
+    status === 'ocr_failed' ||
+    status === 'write_failed' ||
+    status === 'write_result_unknown' ||
+    status === 'governance_blocked'
+  );
+}
+
+function isWriteWarning(status?: ScreenshotStatus): boolean {
+  return status === 'write_partial' || status === 'write_needs_reconciliation';
 }

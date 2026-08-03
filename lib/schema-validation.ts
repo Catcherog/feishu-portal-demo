@@ -19,6 +19,7 @@ import { z } from 'zod';
 export const screenshotStatusSchema = z.enum([
   'received',
   'ocr_processing',
+  'ocr_failed',
   'ocr_completed',
   'candidate_drafted',
   'governance_passed',
@@ -26,6 +27,9 @@ export const screenshotStatusSchema = z.enum([
   'governance_blocked',
   'write_succeeded',
   'write_failed',
+  'write_result_unknown',
+  'write_needs_reconciliation',
+  'write_partial',
   'duplicate_skipped',
   'review_pending',
   'review_resolved',
@@ -109,6 +113,7 @@ export const getScreenshotStatusResponseSchema = z
         status: writeResultStatusSchema.optional(),
         entity_count: z.number().optional(),
         completed_at: z.string().optional(),
+        error_code: z.string().optional(),
       })
       .loose()
       .optional(),
@@ -342,6 +347,7 @@ export const getFinalResultResponseSchema = z
     screenshot_id: z.string(),
     ingestion_id: z.string(),
     final_status: screenshotStatusSchema,
+    error_code: z.string().optional(),
     governance_result_v1: z
       .object({
         schema_version: z.string(),
@@ -372,6 +378,7 @@ export const getFinalResultResponseSchema = z
             target_table: z.string(),
             target_record_id: z.union([z.string(), z.null()]).optional(),
             attempted_at: z.string().optional(),
+            error_code: z.string().optional(),
           })
           .loose(),
         review: z

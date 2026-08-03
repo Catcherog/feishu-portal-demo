@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { usePortalStore } from '@/lib/store';
 import {
   isTerminalStatus,
@@ -19,6 +19,11 @@ import { GovernanceCard } from '@/components/GovernanceCard';
 import { WritePreview } from '@/components/WritePreview';
 import { ExecuteConfirmDialog } from '@/components/ExecuteConfirmDialog';
 import type { ScreenshotItem, ProcessingStage } from '@/lib/types';
+import {
+  isControlledPreviewConfirmed,
+  isControlledPreviewGenerated,
+  shouldStopAutoPolling,
+} from '@/lib/write-flow-state';
 
 export default function HomePage() {
   const screenshots = usePortalStore((s) => s.screenshots);
@@ -34,18 +39,32 @@ export default function HomePage() {
   const loadFinalResult = usePortalStore((s) => s.loadFinalResult);
 
   const selectedItem = screenshots.find((it) => it.localId === selectedLocalId) ?? null;
+  // OCR 真伪只能以后端返回的 evidence/status 为准，不能由 API mode 推断。
+  const activeOcrEngine =
+    selectedItem?.evidenceResponse?.ocr_evidence.engine ??
+    selectedItem?.statusResponse?.ocr?.engine;
+  const activeOcrVersion = selectedItem?.evidenceResponse?.ocr_evidence.ocr_version;
   const [showEscalate, setShowEscalate] = useState(false);
   const [escalateReasonCode, setEscalateReasonCode] = useState('PROJECT_TYPE_REQUIRED');
   const [escalateReason, setEscalateReason] = useState('');
   const [dryRun, setDryRun] = useState(false);
   const [showExecuteDialog, setShowExecuteDialog] = useState(false);
+  const [runtimeReady, setRuntimeReady] = useState(false);
 
   const isControlled = isControlledWriteEnvironment();
+  const handleRuntimeResult = useCallback((result: { collatorReady: boolean; sopReady: boolean }) => {
+    setRuntimeReady(result.collatorReady && result.sopReady);
+  }, []);
+
+  // internal-controlled 的 Execute 是真实写入端点，不接受 dry-run 参数。
+  useEffect(() => {
+    if (isControlled) setDryRun(false);
+  }, [isControlled]);
 
   // 自动轮询
   useEffect(() => {
     if (!selectedItem?.screenshotId) return;
-    if (selectedItem.stage === 'done') return;
+    if (shouldStopAutoPolling(selectedItem.stage, !!selectedItem.internalPreview)) return;
     if (selectedItem.serverStatus && isTerminalStatus(selectedItem.serverStatus)) return;
 
     let attempts = 0;
@@ -60,7 +79,14 @@ export default function HomePage() {
       pollStatus(selectedItem.localId);
     }, 2000);
     return () => clearInterval(timer);
-  }, [selectedItem?.screenshotId, selectedItem?.stage, selectedItem?.localId, selectedItem?.serverStatus, pollStatus]);
+  }, [
+    selectedItem?.screenshotId,
+    selectedItem?.stage,
+    selectedItem?.localId,
+    selectedItem?.serverStatus,
+    selectedItem?.internalPreview?.preview_id,
+    pollStatus,
+  ]);
 
   // 治理通过后自动加载证据（如果尚未加载）
   useEffect(() => {
@@ -80,7 +106,7 @@ export default function HomePage() {
             <p className="text-[10px] sm:text-xs text-gray-400 hidden sm:block">AI-native Intake Console</p>
           </div>
           <div className="flex items-center gap-3 sm:gap-4 shrink-0">
-            <RuntimeStatusBar />
+            <RuntimeStatusBar onResult={handleRuntimeResult} />
             {isControlled && (
               <span className="hidden sm:inline-flex px-2 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200">
                 受控写入环境
@@ -93,7 +119,12 @@ export default function HomePage() {
       {/* Demo 披露横幅 */}
       <div className="px-3 sm:px-6 pt-3">
         <div className="max-w-6xl mx-auto">
-          <DemoDisclosureBanner apiMode={apiMode} dryRun={dryRun} />
+          <DemoDisclosureBanner
+            apiMode={apiMode}
+            dryRun={dryRun}
+            ocrEngine={activeOcrEngine}
+            ocrVersion={activeOcrVersion}
+          />
         </div>
       </div>
 
@@ -127,6 +158,7 @@ export default function HomePage() {
                 dryRun={dryRun}
                 onDryRunChange={setDryRun}
                 isControlled={isControlled}
+                runtimeReady={runtimeReady}
                 onSubmit={() => submitScreenshot(selectedItem.localId, dryRun)}
                 onPoll={() => pollStatus(selectedItem.localId)}
                 onLoadEvidence={() => loadEvidence(selectedItem.localId)}
@@ -199,6 +231,7 @@ interface DetailProps {
   dryRun: boolean;
   onDryRunChange: (v: boolean) => void;
   isControlled: boolean;
+  runtimeReady: boolean;
   onSubmit: () => void;
   onPoll: () => void;
   onLoadEvidence: () => void;
@@ -214,6 +247,7 @@ function DetailPanel({
   dryRun,
   onDryRunChange,
   isControlled,
+  runtimeReady,
   onSubmit,
   onPoll,
   onLoadEvidence,
@@ -227,12 +261,33 @@ function DetailPanel({
     item.screenshotId &&
     (item.stage === 'candidate' || item.stage === 'governance' || item.stage === 'preview' || item.stage === 'write' || item.stage === 'done' ||
       item.serverStatus === 'candidate_drafted' || item.serverStatus === 'ocr_completed' || item.serverStatus === 'governance_passed');
+  const controlledPreviewGenerated = isControlledPreviewGenerated(item.internalPreview?.status);
+  const controlledPreviewConfirmed = isControlledPreviewConfirmed(item.internalPreview?.status);
+  const previewIsConfirmed = isControlled ? controlledPreviewConfirmed : item.previewConfirmed;
   const canGeneratePreview = item.evidenceResponse && (item.stage === 'governance' || item.stage === 'candidate') && item.serverStatus !== 'governance_blocked' && !item.internalPreview;
-  // controlled 模式：需要 internalPreview 存在才能确认；legacy 模式：stage=preview 即可
-  const canConfirmPreview = item.stage === 'preview' && !item.previewConfirmed && (!isControlled || !!item.internalPreview);
-  const canExecute = item.stage === 'preview' && item.previewConfirmed;
+  // controlled 模式以服务端 preview.status 为唯一事实源，避免 stage 轮询回退后按钮消失。
+  const canConfirmPreview = isControlled
+    ? controlledPreviewGenerated && !item.submitting
+    : item.stage === 'preview' && !item.previewConfirmed;
+  // Execute 同样只接受服务端 confirmed；不依赖可能漂移的本地布尔值。
+  const canExecute = isControlled
+    ? controlledPreviewConfirmed && !item.executing && !item.submitting
+    : item.previewConfirmed;
+  // Phase 5: 治理通过判定（serverStatus 或 statusResponse.governance.decision）
+  const governancePassed =
+    item.serverStatus === 'governance_passed' ||
+    item.statusResponse?.governance?.decision === 'PASS';
+  // Phase 5: Execute 按钮额外禁用条件（runtimeReady + governance）
+  const executeDisabled = isControlled
+    ? !runtimeReady || !governancePassed || dryRun
+    : item.executing;
   const canEscalate = item.evidenceResponse && item.stage !== 'done';
-  const isPartial = item.confirmResponse && item.serverStatus !== 'write_succeeded' && item.serverStatus !== 'duplicate_skipped';
+  // Phase 5: partial 状态同时检查 confirmResponse 和 internalWriteResult
+  const isPartial =
+    (item.confirmResponse != null &&
+      item.serverStatus !== 'write_succeeded' &&
+      item.serverStatus !== 'duplicate_skipped') ||
+    item.internalWriteResult?.status === 'partial';
 
   return (
     <div className="rounded-xl bg-white p-4 sm:p-5 shadow-sm border border-gray-100 space-y-4">
@@ -250,7 +305,7 @@ function DetailPanel({
           {item.hasCorrections && (
             <span className="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">已修改</span>
           )}
-          {item.previewConfirmed && (
+          {previewIsConfirmed && (
             <span className="inline-block mt-1 ml-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">Preview 已确认</span>
           )}
         </div>
@@ -271,7 +326,7 @@ function DetailPanel({
               onClick={onSubmit}
               className="px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
-              {item.submitting ? '提交中...' : '提交到 Collator'}
+              {item.submitting ? '提交中...' : '上传并识别'}
             </button>
           )}
           {item.screenshotId && item.stage !== 'done' && (
@@ -294,8 +349,16 @@ function DetailPanel({
           )}
         </div>
         <label className="flex items-center gap-2 text-xs text-gray-600">
-          <input type="checkbox" checked={dryRun} onChange={(e) => onDryRunChange(e.target.checked)} className="rounded" />
-          干运行（Dry Run，不实际写入飞书）
+          <input
+            type="checkbox"
+            checked={dryRun}
+            disabled={isControlled}
+            onChange={(e) => onDryRunChange(e.target.checked)}
+            className="rounded disabled:cursor-not-allowed"
+          />
+          {isControlled
+            ? '受控写入：生成 Preview 不会写入，Execute 将执行真实写入'
+            : '干运行（Dry Run，不实际写入飞书）'}
         </label>
       </div>
 
@@ -335,7 +398,7 @@ function DetailPanel({
       )}
 
       {/* 写入 Preview（步骤 04） */}
-      {item.stage === 'preview' && item.evidenceResponse && (
+      {(item.stage === 'preview' || !!item.internalPreview) && item.evidenceResponse && (
         <div className="border-t pt-3 space-y-3">
           <WritePreview item={item} evidence={item.evidenceResponse} />
         </div>
@@ -365,16 +428,16 @@ function DetailPanel({
                 onClick={onConfirmPreview}
                 className="px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
               >
-                {item.submitting ? '确认中...' : '确认预览'}
+                {item.submitting ? '确认中...' : '确认本次写入计划'}
               </button>
             )}
             {/* 执行真实写入（AC-14: Confirm 不会自动触发 Execute） */}
             {canExecute && (
               <button
                 type="button"
-                disabled={item.executing}
+                disabled={executeDisabled}
                 onClick={onExecuteClick}
-                className={`px-4 py-2 rounded-md text-sm font-medium text-white transition-colors disabled:bg-gray-300
+                className={`px-4 py-2 rounded-md text-sm font-medium text-white transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed
                   ${dryRun ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-600 hover:bg-red-700'}`}
               >
                 {item.executing ? '执行中...' : dryRun ? '执行干运行' : '执行真实写入'}
@@ -401,10 +464,16 @@ function DetailPanel({
             </div>
           )}
           {/* AC-14 提示 */}
-          {item.stage === 'preview' && !item.previewConfirmed && (
+          {isControlled && controlledPreviewGenerated && (
             <p className="text-[10px] text-gray-400">请先确认预览，然后才能执行写入。</p>
           )}
-          {item.stage === 'preview' && item.previewConfirmed && (
+          {isControlled && controlledPreviewConfirmed && (
+            <p className="text-[10px] text-amber-600">预览已确认，可执行写入。执行前将再次弹出确认。</p>
+          )}
+          {!isControlled && item.stage === 'preview' && !item.previewConfirmed && (
+            <p className="text-[10px] text-gray-400">请先确认预览，然后才能执行写入。</p>
+          )}
+          {!isControlled && item.stage === 'preview' && item.previewConfirmed && (
             <p className="text-[10px] text-amber-600">预览已确认，可执行写入。执行前将再次弹出确认。</p>
           )}
         </div>
