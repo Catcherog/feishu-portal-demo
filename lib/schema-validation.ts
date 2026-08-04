@@ -39,6 +39,9 @@ export const screenshotStatusSchema = z.enum([
 export const writeResultStatusSchema = z.enum([
   'succeeded',
   'failed',
+  'partial',
+  'unknown',
+  'needs_reconciliation',
   'rolled_back',
   'not_attempted',
 ]);
