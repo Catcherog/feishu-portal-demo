@@ -5,7 +5,7 @@
  * - Normal: realApiClient 调用 fetch 的 URL/method 正确
  * - Error: HTTP 500、超时(abort)、无效 JSON → 抛出 ScreenshotApiError
  * - Security: 客户端模块不含 SECRET/APP_SECRET/TOKEN 等凭据字符串
- * - Demo mode: getApiMode 在 true/false/缺失(production) 下的行为
+ * - Demo mode: getApiMode 仅接受显式 true/false，缺失或非法配置 fail closed
  * - Schema validation: 畸形响应抛出 SCHEMA_VALIDATION_FAILED
  * - Regression: mockApiClient 仍正常工作（AC-A08）
  */
@@ -50,7 +50,7 @@ function makeInvalidJsonResponse(status = 200): Response {
     json: async () => {
       throw new SyntaxError('Unexpected token in JSON');
     },
-  } as Response;
+  } as unknown as Response;
 }
 
 // ============================================================================
@@ -356,6 +356,27 @@ describe('realApiClient — 正常调用', () => {
     expect(url).toContain('/v1/screenshots/ss_test_001/final-result');
     expect(init.method).toBe('GET');
   });
+
+  it('getFinalResult 接受后端 write_partial 终态，不得因旧枚举误报结构校验失败', async () => {
+    fetchSpy.mockResolvedValue(makeOkResponse({
+      ...validFinalResultResponse,
+      final_status: 'write_partial',
+      error_code: 'INTERNAL_WRITE_PARTIAL',
+      governance_result_v1: {
+        ...validFinalResultResponse.governance_result_v1,
+        write: {
+          ...validFinalResultResponse.governance_result_v1.write,
+          status: 'partial',
+          error_code: 'INTERNAL_WRITE_PARTIAL',
+        },
+      },
+    }));
+
+    const { realApiClient } = await import('../api-client');
+    const result = await realApiClient.getFinalResult('ss_test_001');
+    expect(result.final_status).toBe('write_partial');
+    expect(result.error_code).toBe('INTERNAL_WRITE_PARTIAL');
+  });
 });
 
 // ============================================================================
@@ -530,7 +551,7 @@ describe('getApiMode — NEXT_PUBLIC_DEMO_MODE 配置（AC-A03）', () => {
     } else {
       process.env.NEXT_PUBLIC_DEMO_MODE = originalDemoMode;
     }
-    process.env.NODE_ENV = originalNodeEnv;
+    (process.env as Record<string, string | undefined>).NODE_ENV = originalNodeEnv;
   });
 
   it('NEXT_PUBLIC_DEMO_MODE=true 返回 mock', async () => {
@@ -547,19 +568,16 @@ describe('getApiMode — NEXT_PUBLIC_DEMO_MODE 配置（AC-A03）', () => {
 
   it('生产构建缺失环境变量时抛错', async () => {
     delete process.env.NEXT_PUBLIC_DEMO_MODE;
-    process.env.NODE_ENV = 'production';
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
     const { getApiMode } = await import('../api-client');
     expect(() => getApiMode()).toThrow('NEXT_PUBLIC_DEMO_MODE must be set explicitly');
   });
 
-  it('开发环境缺失环境变量时默认 mock（console.warn）', async () => {
+  it('开发环境缺失环境变量时同样抛错，不得静默进入 mock', async () => {
     delete process.env.NEXT_PUBLIC_DEMO_MODE;
-    process.env.NODE_ENV = 'development';
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'development';
     const { getApiMode } = await import('../api-client');
-    expect(getApiMode()).toBe('mock');
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(() => getApiMode()).toThrow('NEXT_PUBLIC_DEMO_MODE must be set explicitly');
   });
 
   it('getConfiguredApiClient 根据 env 返回对应 client', async () => {
@@ -569,6 +587,72 @@ describe('getApiMode — NEXT_PUBLIC_DEMO_MODE 配置（AC-A03）', () => {
     // realApiClient 每个方法都含 validateOrThrow，mockApiClient 直接转发 mock
     // 验证指向同一对象引用即可
     expect(client).toBe(realApiClient);
+  });
+
+  it('只有 real + local-companion + controlled 才视为受控写入环境', async () => {
+    const originalRuntimeMode = process.env.NEXT_PUBLIC_RUNTIME_MODE;
+    const originalWriteMode = process.env.NEXT_PUBLIC_WRITE_MODE;
+    try {
+      process.env.NEXT_PUBLIC_DEMO_MODE = 'false';
+      process.env.NEXT_PUBLIC_RUNTIME_MODE = 'local-companion';
+      process.env.NEXT_PUBLIC_WRITE_MODE = 'controlled';
+      const { isControlledWriteEnvironment } = await import('../api-client');
+      expect(isControlledWriteEnvironment()).toBe(true);
+
+      process.env.NEXT_PUBLIC_WRITE_MODE = 'dry-only';
+      expect(isControlledWriteEnvironment()).toBe(false);
+
+      process.env.NEXT_PUBLIC_WRITE_MODE = 'controlled';
+      process.env.NEXT_PUBLIC_RUNTIME_MODE = 'demo';
+      expect(isControlledWriteEnvironment()).toBe(false);
+
+      process.env.NEXT_PUBLIC_RUNTIME_MODE = 'local-companion';
+      process.env.NEXT_PUBLIC_DEMO_MODE = 'true';
+      expect(isControlledWriteEnvironment()).toBe(false);
+    } finally {
+      if (originalRuntimeMode === undefined) delete process.env.NEXT_PUBLIC_RUNTIME_MODE;
+      else process.env.NEXT_PUBLIC_RUNTIME_MODE = originalRuntimeMode;
+      if (originalWriteMode === undefined) delete process.env.NEXT_PUBLIC_WRITE_MODE;
+      else process.env.NEXT_PUBLIC_WRITE_MODE = originalWriteMode;
+    }
+  });
+});
+
+// ============================================================================
+// 测试组 4.5: 本地运行时健康检查
+// ============================================================================
+
+describe('checkRuntimeHealth — Collator + SOP 就绪状态', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('Collator 和 SOP 均就绪时返回 connected', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeOkResponse({
+      status: 'ready',
+      dependencies: { sop: 'ready' },
+    })));
+    const { checkRuntimeHealth } = await import('../api-client');
+
+    await expect(checkRuntimeHealth()).resolves.toMatchObject({
+      status: 'connected',
+      collatorReady: true,
+      sopReady: true,
+    });
+  });
+
+  it('Collator 在线但 SOP 不可用时返回 sop_unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeErrorResponse(503, {
+      status: 'not_ready',
+      dependencies: { sop: 'unavailable' },
+    })));
+    const { checkRuntimeHealth } = await import('../api-client');
+
+    await expect(checkRuntimeHealth()).resolves.toMatchObject({
+      status: 'sop_unavailable',
+      collatorReady: true,
+      sopReady: false,
+    });
   });
 });
 
@@ -854,8 +938,21 @@ describe('pollScreenshotStatus — 轮询健壮性（AC-A04）', () => {
 
   it('isTerminalStatus 正确识别终态', async () => {
     const { isTerminalStatus } = await import('../api-client');
-    const terminal = ['write_succeeded', 'write_failed', 'duplicate_skipped', 'review_resolved', 'expired', 'governance_blocked'];
-    const nonTerminal = ['received', 'ocr_processing', 'ocr_completed', 'candidate_drafted', 'governance_passed', 'governance_needs_review', 'review_pending'];
+    const terminal = [
+      'ocr_failed',
+      'governance_needs_review',
+      'governance_blocked',
+      'write_succeeded',
+      'write_failed',
+      'write_result_unknown',
+      'write_needs_reconciliation',
+      'write_partial',
+      'duplicate_skipped',
+      'review_pending',
+      'review_resolved',
+      'expired',
+    ];
+    const nonTerminal = ['received', 'ocr_processing', 'ocr_completed', 'candidate_drafted', 'governance_passed'];
 
     for (const s of terminal) {
       expect(isTerminalStatus(s as never)).toBe(true);

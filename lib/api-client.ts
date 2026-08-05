@@ -214,34 +214,20 @@ export function isInternalControlledReady(): boolean {
  *
  * - 'true'  → mock（演示模式，本地模拟数据）
  * - 'false' → real（调用真实 collator HTTP 服务）
- * - 缺失时：
- *   - 生产构建（NODE_ENV=production）直接抛错，不得静默进入 Demo（amendment 3）
- *   - 开发环境默认 mock 并 console.warn 提示
+ * - 缺失或值非法时：任何环境都直接抛错，不得静默进入 Demo。
  *
- * 此函数在模块加载时被 store 初始化调用，
- * 因此生产构建若未设置环境变量会在构建阶段直接失败。
+ * 此函数在模块加载时被 store 初始化调用，因此未显式配置运行模式时
+ * 会立即失败。这样可以避免本地开发遗漏 .env.local 后误把 mock 数据当成
+ * 真实 OCR 结果。
  */
 export function getApiMode(): ApiMode {
   const raw = process.env.NEXT_PUBLIC_DEMO_MODE;
   if (raw === 'true') return 'mock';
   if (raw === 'false') return 'real';
-
-  // 环境变量缺失或值不合法
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error(
-      'NEXT_PUBLIC_DEMO_MODE must be set explicitly to "true" or "false" in production. ' +
-        '配置缺失时不得静默进入 Demo 模式。',
-    );
-  }
-
-  // 开发环境：默认 mock 并警告
-  if (typeof console !== 'undefined') {
-    console.warn(
-      '[Portal] NEXT_PUBLIC_DEMO_MODE 未设置，默认使用 mock（演示）模式。' +
-        '设置 NEXT_PUBLIC_DEMO_MODE=false 以调用真实 collator API。',
-    );
-  }
-  return 'mock';
+  throw new Error(
+    'NEXT_PUBLIC_DEMO_MODE must be set explicitly to "true" or "false". ' +
+      '配置缺失或非法时不得静默进入 Mock/Demo 模式。',
+  );
 }
 
 // ============================================================================
@@ -252,10 +238,16 @@ export function getApiMode(): ApiMode {
 const TERMINAL_STATUSES: ReadonlySet<ScreenshotStatus> = new Set([
   'write_succeeded',
   'write_failed',
+  'write_result_unknown',
+  'write_needs_reconciliation',
+  'write_partial',
   'duplicate_skipped',
   'review_resolved',
   'expired',
   'governance_blocked',
+  'ocr_failed',
+  'governance_needs_review',
+  'review_pending',
 ]);
 
 /** 判断状态是否为终态（无需继续轮询） */
@@ -607,7 +599,19 @@ export async function checkRuntimeHealth(): Promise<HealthCheckResult> {
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json' },
     });
+    const data = await res.json().catch(() => null) as {
+      status?: string;
+      dependencies?: { sop?: string };
+    } | null;
     if (!res.ok) {
+      if (res.status === 503 && data?.dependencies?.sop === 'unavailable') {
+        return {
+          status: 'sop_unavailable',
+          collatorReady: true,
+          sopReady: false,
+          message: 'Collator 已启动，但 SOP 治理服务未就绪',
+        };
+      }
       return {
         status: 'collator_offline',
         collatorReady: false,
@@ -615,17 +619,15 @@ export async function checkRuntimeHealth(): Promise<HealthCheckResult> {
         message: `Collator 返回 HTTP ${res.status}`,
       };
     }
-    const data = await res.json();
     const collatorReady = data?.status === 'ready';
-    // Collator /readyz 只检查自身就绪；SOP 就绪由 Collator 内部治理门卫保证。
-    // 如果 Collator 在线但 SOP 不可达，写入流程会在 confirm 阶段 fail closed。
+    const sopReady = data?.dependencies?.sop !== 'unavailable';
     return {
-      status: collatorReady ? 'connected' : 'collator_offline',
+      status: collatorReady && sopReady ? 'connected' : 'sop_unavailable',
       collatorReady,
-      sopReady: collatorReady, // 简化：Collator ready 隐含 SOP 可达
-      message: collatorReady
+      sopReady,
+      message: collatorReady && sopReady
         ? '本地运行时已连接'
-        : 'Collator 未就绪',
+        : 'SOP 治理服务未就绪',
     };
   } catch (err) {
     const isAbort =
@@ -677,7 +679,11 @@ export function getWriteMode(): WriteMode {
   return 'dry-only';
 }
 
-/** 是否为受控写入环境（非 Demo 模式） */
+/** 是否为受控写入环境（真实 API + 本地伴随运行时 + controlled 写入） */
 export function isControlledWriteEnvironment(): boolean {
-  return getApiMode() === 'real' && getRuntimeMode() === 'local-companion';
+  return (
+    getApiMode() === 'real' &&
+    getRuntimeMode() === 'local-companion' &&
+    getWriteMode() === 'controlled'
+  );
 }

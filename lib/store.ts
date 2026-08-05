@@ -20,6 +20,11 @@ import type {
   EscalateReviewRequest,
 } from './types';
 import { getApiClient, ScreenshotApiError, getApiMode, isInternalControlledReady, isControlledWriteEnvironment } from './api-client';
+import {
+  isControlledPreviewConfirmed,
+  isControlledPreviewGenerated,
+  shouldPreserveControlledWorkflowState,
+} from './write-flow-state';
 
 /** 生成前端临时 ID */
 function genLocalId(): string {
@@ -28,6 +33,34 @@ function genLocalId(): string {
 
 /** 默认提交者标识（前端无凭据，仅标识来源） */
 const DEFAULT_REVIEWER_ID = 'portal-user';
+
+/**
+ * 前端状态版本号（Phase 4: 清理旧前端状态）。
+ * 当前 store 仅使用内存状态（zustand），不持久化到 localStorage。
+ * 但旧版本前端可能曾在 localStorage 写入 preview/screenshot 状态，
+ * 此处在页面加载时检测版本不匹配则清除残留 key，防止旧数据干扰。
+ */
+const STATE_VERSION = 2;
+const STATE_VERSION_KEY = 'portal_state_version';
+
+if (typeof window !== 'undefined') {
+  try {
+    const stored = window.localStorage.getItem(STATE_VERSION_KEY);
+    if (stored !== String(STATE_VERSION)) {
+      // 版本不匹配：清除所有 portal 相关的旧 localStorage key
+      const keysToClean = Object.keys(window.localStorage).filter(
+        (k) =>
+          k.startsWith('portal_') ||
+          k.startsWith('screenshot_') ||
+          k.startsWith('preview_'),
+      );
+      keysToClean.forEach((k) => window.localStorage.removeItem(k));
+      window.localStorage.setItem(STATE_VERSION_KEY, String(STATE_VERSION));
+    }
+  } catch {
+    // localStorage 不可用时静默跳过
+  }
+}
 
 /** 文件转 Base64 */
 export function fileToBase64(file: File): Promise<string> {
@@ -236,6 +269,21 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     try {
       const client = getApiClient(state.apiMode);
       const resp = await client.getScreenshotStatus(item.screenshotId);
+      // 轮询请求可能在生成 Preview 前发出、在 Preview 创建后才返回。
+      // 必须读取最新状态，禁止旧 ingestion 响应把 preview/write 回退为 governance。
+      const latest = get().screenshots.find((it) => it.localId === localId);
+      if (!latest) return;
+      if (
+        shouldPreserveControlledWorkflowState(
+          latest.stage,
+          !!latest.internalPreview,
+          !!latest.internalWriteResult,
+        )
+      ) {
+        // 可保留诊断响应，但不覆盖受控写入子流程的 stage/serverStatus。
+        get().updateScreenshot(localId, { statusResponse: resp });
+        return;
+      }
       const stage = mapStatusToStage(resp.status);
       get().updateScreenshot(localId, {
         statusResponse: resp,
@@ -338,6 +386,24 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     const item = state.screenshots.find((it) => it.localId === localId);
     if (!item || !item.screenshotId) return;
     if (item.submitting) return;
+    // Phase 4: 防止重复生成 preview（防止旧 preview 被复用）
+    if (item.internalPreview) {
+      get().updateScreenshot(localId, {
+        error: '已存在写入预览，禁止重复生成。如需重新生成，请先删除该截图重新上传。',
+      });
+      return;
+    }
+    // Phase 4: 会话一致性校验——确保 ingestion、candidate、preview 属于同一会话
+    if (
+      item.evidenceResponse &&
+      item.evidenceResponse.screenshot_id !== item.screenshotId
+    ) {
+      get().updateScreenshot(localId, {
+        error: '会话不一致：证据与当前截图不匹配，请重新加载证据。',
+      });
+      return;
+    }
+    const previousStage = item.stage;
     get().updateScreenshot(localId, {
       stage: 'preview',
       previewConfirmed: false,
@@ -345,8 +411,16 @@ export const usePortalStore = create<PortalState>((set, get) => ({
       submitting: true,
     });
     try {
-      // 受控写入环境 + JWT 已配置 → 走 internal-controlled 3 步流程
-      if (isControlledWriteEnvironment() && isInternalControlledReady()) {
+      // 受控写入环境必须完整走 internal-controlled 3 步流程。
+      // 缺少 JWT 时禁止静默降级到 legacy confirmWrite，否则 UI 会看似完成
+      // Preview/Confirm，实际却执行了另一条写入路径。
+      if (isControlledWriteEnvironment()) {
+        if (!isInternalControlledReady()) {
+          throw new ScreenshotApiError(
+            'INTERNAL_CONTROLLED_NOT_CONFIGURED',
+            '受控写入未配置操作员 JWT：请设置 NEXT_PUBLIC_PORTAL_OPERATOR_JWT。',
+          );
+        }
         const client = getApiClient(state.apiMode);
         const candidateId = item.evidenceResponse?.candidate_v1.candidate_id ?? '';
         if (!candidateId) {
@@ -356,20 +430,32 @@ export const usePortalStore = create<PortalState>((set, get) => ({
           screenshot_id: item.screenshotId,
           candidate_v1_id: candidateId,
         });
+        // Phase 3: 校验业务状态码，确保 preview 已成功生成
+        if (preview.status !== 'preview_generated') {
+          throw new ScreenshotApiError(
+            'UNEXPECTED_PREVIEW_STATUS',
+            `预览生成返回异常状态: ${preview.status}（期望: preview_generated）`,
+            preview,
+          );
+        }
         get().updateScreenshot(localId, {
           submitting: false,
           internalPreview: preview,
+          // Preview 由服务端在真实 SOP PASS 后生成。同步服务端治理状态，
+          // 避免 Execute 按钮因本地旧状态仍为 candidate_drafted 而被误禁用。
+          serverStatus: 'governance_passed',
           // preview 状态为 preview_generated，等待用户确认
           previewConfirmed: false,
         });
       } else {
-        // 非 controlled 模式或 JWT 未配置 → 仅切换 UI 状态（兼容旧 test 模式）
+        // 显式 Demo 或 dry-only 模式保留旧流程；受控模式绝不进入此分支。
         get().updateScreenshot(localId, { submitting: false });
       }
     } catch (err) {
       const message = err instanceof ScreenshotApiError ? err.message : String(err);
       get().updateScreenshot(localId, {
         submitting: false,
+        stage: previousStage,
         error: `生成预览失败: ${message}`,
       });
     }
@@ -380,11 +466,36 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     const item = state.screenshots.find((it) => it.localId === localId);
     if (!item || !item.screenshotId) return;
     if (item.submitting) return;
-    // 已确认则幂等返回
-    if (item.previewConfirmed) return;
+    const controlled = isControlledWriteEnvironment();
+    // controlled 模式以服务端 preview.status 判定幂等；本地 previewConfirmed 仅作 UI 镜像。
+    if (controlled && isControlledPreviewConfirmed(item.internalPreview?.status)) {
+      if (!item.previewConfirmed) {
+        get().updateScreenshot(localId, { previewConfirmed: true, stage: 'preview' });
+      }
+      return;
+    }
+    if (!controlled && item.previewConfirmed) return;
 
-    // 受控写入环境 + 有 internal preview → 调用 confirm API
-    if (isControlledWriteEnvironment() && isInternalControlledReady() && item.internalPreview) {
+    // 受控写入环境必须调用 confirm API，不允许缺配置时静默切换本地状态。
+    if (controlled) {
+      if (!isInternalControlledReady()) {
+        get().updateScreenshot(localId, {
+          error: '确认预览失败: 受控写入未配置 NEXT_PUBLIC_PORTAL_OPERATOR_JWT。',
+        });
+        return;
+      }
+      if (!item.internalPreview) {
+        get().updateScreenshot(localId, {
+          error: '确认预览失败: 服务端写入预览不存在，请重新生成预览。',
+        });
+        return;
+      }
+      if (!isControlledPreviewGenerated(item.internalPreview.status)) {
+        get().updateScreenshot(localId, {
+          error: `确认预览失败: 当前服务端 Preview 状态为 ${item.internalPreview.status}，期望 preview_generated。`,
+        });
+        return;
+      }
       get().updateScreenshot(localId, { submitting: true, error: undefined });
       try {
         const client = getApiClient(state.apiMode);
@@ -392,6 +503,14 @@ export const usePortalStore = create<PortalState>((set, get) => ({
           nonce: item.internalPreview.nonce,
           candidate_v1_id: item.internalPreview.candidate_id,
         });
+        // Phase 3: 校验业务状态码，确保 preview 已确认
+        if (confirmed.status !== 'confirmed') {
+          throw new ScreenshotApiError(
+            'UNEXPECTED_CONFIRM_STATUS',
+            `预览确认返回异常状态: ${confirmed.status}（期望: confirmed）`,
+            confirmed,
+          );
+        }
         get().updateScreenshot(localId, {
           submitting: false,
           internalPreview: confirmed,
@@ -414,24 +533,58 @@ export const usePortalStore = create<PortalState>((set, get) => ({
     const state = get();
     const item = state.screenshots.find((it) => it.localId === localId);
     if (!item || !item.screenshotId) return;
-    if (!item.previewConfirmed) return; // AC-14: Preview 未确认时禁止执行
     if (item.submitting || item.executing) return; // 防重复
+    const controlled = isControlledWriteEnvironment();
+    const previewConfirmed = controlled
+      ? isControlledPreviewConfirmed(item.internalPreview?.status)
+      : item.previewConfirmed;
+    if (!previewConfirmed) {
+      get().updateScreenshot(localId, {
+        error: '执行写入失败: Preview 尚未由服务端确认。',
+      });
+      return;
+    }
+    if (controlled) {
+      if (dryRun) {
+        get().updateScreenshot(localId, {
+          error: '受控三步写入不支持“执行干运行”。Preview 本身不会写入；取消干运行后再执行真实写入。',
+        });
+        return;
+      }
+      if (!isInternalControlledReady()) {
+        get().updateScreenshot(localId, {
+          error: '执行写入失败: 受控写入未配置 NEXT_PUBLIC_PORTAL_OPERATOR_JWT。',
+        });
+        return;
+      }
+      if (!item.internalPreview || item.internalPreview.status !== 'confirmed') {
+        get().updateScreenshot(localId, {
+          error: '执行写入失败: 服务端 Preview 尚未确认，禁止执行。',
+        });
+        return;
+      }
+    }
     get().updateScreenshot(localId, { executing: true, error: undefined, stage: 'write' });
     try {
-      // 受控写入环境 + JWT 已配置 + 有 internal preview → 走 execute API
-      if (isControlledWriteEnvironment() && isInternalControlledReady() && item.internalPreview) {
+      // 受控写入环境完整走 execute API；上方已完成配置与状态校验。
+      if (controlled && item.internalPreview) {
         const client = getApiClient(state.apiMode);
         const result = await client.executeInternalWrite(item.internalPreview.preview_id, {
           nonce: item.internalPreview.nonce,
           candidate_v1_id: item.internalPreview.candidate_id,
         });
-        const isSuccess = result.status === 'succeeded';
+        // 后端 internal-controlled 状态必须无损映射到截图契约。
+        // 旧实现把 partial / result_unknown / needs_reconciliation 全部伪装成
+        // write_failed，随后 getFinalResult 返回真实状态时又被前端旧枚举拒绝。
+        const serverStatus = mapInternalResultStatusToScreenshotStatus(result.status);
         get().updateScreenshot(localId, {
           executing: false,
           submitting: false,
           internalWriteResult: result,
-          serverStatus: isSuccess ? 'write_succeeded' : 'write_failed',
-          stage: isSuccess ? 'done' : 'write',
+          serverStatus,
+          // execute 已返回终态，无论成功、部分完成或需对账都进入结果页。
+          stage: 'done',
+          error: internalWriteOutcomeMessage(result.status),
         });
         // 加载最终结果以获取 write_logs 和 transaction_snapshot
         await get().loadFinalResult(localId);
@@ -457,6 +610,7 @@ export const usePortalStore = create<PortalState>((set, get) => ({
       const message = err instanceof ScreenshotApiError ? err.message : String(err);
       get().updateScreenshot(localId, {
         executing: false,
+        stage: controlled ? 'preview' : item.stage,
         error: `执行写入失败: ${message}`,
       });
     }
@@ -519,6 +673,8 @@ function mapStatusToStage(status: import('./types').ScreenshotStatus): Processin
     case 'received':
     case 'ocr_processing':
       return 'ocr';
+    case 'ocr_failed':
+      return 'done';
     case 'ocr_completed':
     case 'candidate_drafted':
       return 'candidate';
@@ -530,6 +686,9 @@ function mapStatusToStage(status: import('./types').ScreenshotStatus): Processin
     case 'governance_blocked':
     case 'write_succeeded':
     case 'write_failed':
+    case 'write_result_unknown':
+    case 'write_needs_reconciliation':
+    case 'write_partial':
     case 'duplicate_skipped':
     case 'review_pending':
     case 'review_resolved':
@@ -537,5 +696,40 @@ function mapStatusToStage(status: import('./types').ScreenshotStatus): Processin
       return 'done';
     default:
       return 'idle';
+  }
+}
+
+/** 将 internal-controlled 执行状态映射为冻结的截图状态契约。 */
+function mapInternalResultStatusToScreenshotStatus(
+  status: string,
+): import('./types').ScreenshotStatus {
+  switch (status) {
+    case 'succeeded':
+      return 'write_succeeded';
+    case 'partial':
+      return 'write_partial';
+    case 'result_unknown':
+      return 'write_result_unknown';
+    case 'needs_reconciliation':
+      return 'write_needs_reconciliation';
+    case 'failed':
+    default:
+      return 'write_failed';
+  }
+}
+
+/** 终态提示；undefined 表示无错误横幅。 */
+function internalWriteOutcomeMessage(status: string): string | undefined {
+  switch (status) {
+    case 'succeeded':
+      return undefined;
+    case 'partial':
+      return '写入部分完成（partial）：至少一个真实业务记录已产生，禁止直接重试，请查看写入日志并人工核查。';
+    case 'result_unknown':
+      return '写入结果未知（result_unknown）：请求可能已到达飞书，禁止重试，必须先执行对账。';
+    case 'needs_reconciliation':
+      return '写入需要对账（needs_reconciliation）：请根据记录 ID 与审计日志完成恢复。';
+    default:
+      return '写入失败：请查看实体级错误码和最终结果，确认未产生记录后再决定是否重试。';
   }
 }

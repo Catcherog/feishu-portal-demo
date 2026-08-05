@@ -24,6 +24,7 @@ export const SCREENSHOT_API_VERSION = 'v1' as const;
 export type ScreenshotStatus =
   | 'received'
   | 'ocr_processing'
+  | 'ocr_failed'
   | 'ocr_completed'
   | 'candidate_drafted'
   | 'governance_passed'
@@ -31,6 +32,9 @@ export type ScreenshotStatus =
   | 'governance_blocked'
   | 'write_succeeded'
   | 'write_failed'
+  | 'write_result_unknown'
+  | 'write_needs_reconciliation'
+  | 'write_partial'
   | 'duplicate_skipped'
   | 'review_pending'
   | 'review_resolved'
@@ -114,6 +118,7 @@ export interface GetScreenshotStatusResponse {
     status?: WriteResultStatus;
     entity_count?: number;
     completed_at?: string;
+    error_code?: string;
   };
   created_at: string;
   updated_at: string;
@@ -285,6 +290,7 @@ export interface GetFinalResultResponse {
   screenshot_id: string;
   ingestion_id: string;
   final_status: ScreenshotStatus;
+  error_code?: string;
   governance_result_v1: {
     schema_version: string;
     candidate_id: string;
@@ -305,6 +311,7 @@ export interface GetFinalResultResponse {
       target_table: string;
       target_record_id?: string | null;
       attempted_at?: string;
+      error_code?: string;
     };
     review: {
       status: string;
