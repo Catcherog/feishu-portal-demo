@@ -14,6 +14,7 @@ import { CorrectionForm } from '@/components/CorrectionForm';
 import { ResultPanel } from '@/components/ResultPanel';
 import { DemoDisclosureBanner } from '@/components/DemoDisclosureBanner';
 import { RuntimeStatusBar } from '@/components/RuntimeStatusBar';
+import { BuildIdentityBadge } from '@/components/BuildIdentityBadge';
 import { StepIndicator } from '@/components/StepIndicator';
 import { GovernanceCard } from '@/components/GovernanceCard';
 import { WritePreview } from '@/components/WritePreview';
@@ -103,7 +104,11 @@ export default function HomePage() {
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-2">
           <div className="min-w-0">
             <h1 className="text-base sm:text-lg font-bold text-gray-900 truncate">飞书智能录入台</h1>
-            <p className="text-[10px] sm:text-xs text-gray-400 hidden sm:block">AI-native Intake Console</p>
+            <div className="flex items-center gap-2">
+              <p className="text-[10px] sm:text-xs text-gray-400 hidden sm:block">AI-native Intake Console</p>
+              {/* AC-01: 只读构建标识，用于确认线上版本 */}
+              <BuildIdentityBadge />
+            </div>
           </div>
           <div className="flex items-center gap-3 sm:gap-4 shrink-0">
             <RuntimeStatusBar onResult={handleRuntimeResult} />
